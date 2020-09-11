@@ -117,6 +117,22 @@ enum Class {
   HS,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Label {
+  Normal(Option<String>),
+  Compressed(u16),
+}
+
+impl Label {
+  fn size(&self) -> usize {
+    match self {
+      Label::Normal(Some(l)) => l.len() + 1,
+      Label::Normal(None) => 1,
+      Label::Compressed(_) => 2,
+    }
+  }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum QClass {
   Any,
@@ -149,6 +165,12 @@ const HEADER_SIZE: usize = 12;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const ADDR_ANY: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const MULTICAST_PORT: u16 = 5353;
+const QUERY_TYPE_SIZE: u8 = 2;
+const QUERY_CLASS_SIZE: u8 = 2;
+
+const LABEL_TYPE_MASK: u8 = 0b11000000;
+const LABEL_MASK_TYPE_NORMAL: u8 = 0b00000000;
+const LABEL_MASK_TYPE_COMPRESSED: u8 = 0b11000000;
 
 /*
 https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-srv-record/
@@ -156,6 +178,8 @@ https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-sr
 https://tools.ietf.org/html/rfc5395 -> Has packet structure
 https://tools.ietf.org/html/rfc2136
 https://tools.ietf.org/html/rfc6195
+
+https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
 
 https://flylib.com/books/en/3.223.1.151/1/ <- Pretty clear
 
@@ -177,10 +201,37 @@ https://tools.ietf.org/html/rfc1035 -> 4.1.1
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
 
+fn parse_query_labels(data: &[u8]) -> Result<Vec<Label>, ParseError> {
+  let mut labels = vec![];
+  let mut index = 0;
+
+  loop {
+    let data = &data[index..];
+    let label_type = LABEL_TYPE_MASK & data[0];
+
+    let label = match label_type {
+      LABEL_MASK_TYPE_COMPRESSED => parse_label_compressed(data),
+      LABEL_MASK_TYPE_NORMAL => parse_label_normal(data),
+      n => Err(ParseError::QueryLabelError(format!(
+        "Unknown label type: {}",
+        n
+      ))),
+    }?;
+    labels.push(label.clone());
+
+    match label {
+      Label::Compressed(_) => return Ok(labels),
+      Label::Normal(None) => return Ok(labels),
+      _ => {
+        index += label.size();
+      }
+    }
+  }
+}
+
 fn parse(data: &[u8]) -> Result<(Header, Vec<Query>), ParseError> {
   let raw_header = copy_header(data)?;
   let header = parse_header(raw_header);
-  println!("header: {:?}", header);
   let queries = parse_queries(&header, &data[12..])?;
   Ok((header, queries))
 }
@@ -231,7 +282,6 @@ fn parse_q_class(data: [u8; 2]) -> QClass {
 
 fn parse_type(data: [u8; 2]) -> Type {
   let t = (data[0] as u16) << 8 | data[1] as u16;
-  println!("parse_type - data: {:?}", data);
   match t {
     1 => Type::A,
     2 => Type::NS,
@@ -265,15 +315,10 @@ fn parse_q_type(data: [u8; 2]) -> QType {
 }
 
 fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError> {
-  //println!("{:?}", data);
   let mut queries = vec![];
   let mut previous_index = 0;
-  println!("qd_count:{:?}", header.qd_count);
   for _ in 0..header.qd_count {
-    println!("previously {:?}", previous_index);
-    println!("{:?}\n", &data[previous_index..]);
     let query = parse_query(&data[previous_index..])?;
-    println!("query: {:?}", query);
     previous_index += query.size();
     queries.push(query);
   }
@@ -458,6 +503,55 @@ fn parse_header_truncated(header: RawHeader) -> TC {
   }
 }
 
+fn parse_label_normal(data: &[u8]) -> Result<Label, ParseError> {
+  let data_len = data.len();
+  if data_len == 0 {
+    return Err(ParseError::QueryLabelError(
+      "Data is zero length".to_owned(),
+    ));
+  }
+
+  let count = data[0];
+  if count == 0 {
+    return Ok(Label::Normal(None));
+  }
+
+  if count > 63 {
+    return Err(ParseError::QueryLabelError(
+      "Count exceeds limit of 63".to_owned(),
+    ));
+  }
+
+  if (count as usize) > (data_len - 1) {
+    return Err(ParseError::QueryLabelError(
+      "Wrong label count. Count would overflow data".to_owned(),
+    ));
+  }
+
+  let label_data = &data[1..((count + 1) as usize)];
+  for &i in label_data {
+    if i == 0 {
+      return Err(ParseError::QueryLabelError(
+        "Zero encountered before end of label".to_owned(),
+      ));
+    }
+  }
+
+  std::str::from_utf8(label_data)
+    .map(|s| Label::Normal(Some(s.to_owned())))
+    .map_err(|e| ParseError::QueryLabelError(e.to_string()))
+}
+
+fn parse_label_compressed(data: &[u8]) -> Result<Label, ParseError> {
+  if data.len() < 2 {
+    return Err(ParseError::QueryLabelError(
+      "Trying to parse compressed label, but data is not long enough".to_owned(),
+    ));
+  }
+  let pointer_value = ((!LABEL_MASK_TYPE_COMPRESSED & data[0]) as u16) << 8 | data[1] as u16;
+  Ok(Label::Compressed(pointer_value))
+}
+
 pub fn net_mdns() {
   let socket = net2::UdpBuilder::new_v4()
     .unwrap()
@@ -477,7 +571,6 @@ pub fn net_mdns() {
   loop {
     let (amt, src) = socket.recv_from(&mut buf).unwrap();
     let header = parse(&buf[0..amt]);
-    println!("{} sent header {:?}", src, header);
     match header {
       Ok((header, queries)) => {
         println!("header: {:?}", header);
@@ -804,13 +897,6 @@ mod test {
   }
 
   #[test]
-  fn parse_question_query_labels_with_three_sections() {
-    let result =
-      super::parse_question_query_labels(&[3, 97, 98, 99, 2, 100, 101, 4, 102, 103, 104, 105, 0]);
-    println!("{:?}", result);
-  }
-
-  #[test]
   fn parse_type() {
     let test_data = [
       ([0, 0], super::Type::Invalid),
@@ -980,14 +1066,21 @@ mod test {
   #[test]
   fn parse_test() {
     let data = [
-      0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 1, 8, 95, 104, 111, 109, 101, 107, 105, 116, 4, 95, 116, 99,
-      112, 5, 108, 111, 99, 97, 108, 0, 0, 12, 0, 1, 15, 95, 99, 111, 109, 112, 97, 110, 105, 111,
-      110, 45, 108, 105, 110, 107, 192, 21, 0, 12, 0, 1, 8, 95, 97, 105, 114, 112, 108, 97, 121,
-      192, 21, 0, 12, 0, 1, 5, 95, 114, 97, 111, 112, 192, 21, 0, 12, 0, 1, 12, 95, 115, 108, 101,
-      101, 112, 45, 112, 114, 111, 120, 121, 4, 95, 117, 100, 112, 192, 26, 0, 12, 0, 1, 192, 37,
-      0, 12, 0, 1, 0, 0, 17, 148, 0, 11, 8, 77, 97, 99, 98, 111, 111, 107, 49, 192, 37, 0, 0, 41,
-      5, 160, 0, 0, 17, 148, 0, 18, 0, 4, 0, 14, 0, 5, 118, 66, 139, 236, 153, 136, 116, 66, 139,
-      236, 153, 136,
+      /* HEADER */ 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 1, /* QUERY 1 */ /* LABEL */ 8, 95,
+      104, 111, 109, 101, 107, 105, 116, /* LABEL */ 4, 95, 116, 99, 112, /* LABEL */ 5,
+      108, 111, 99, 97, 108, 0, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1,
+      /* QUERY 2 */ /* LABEL */ 15, 95, 99, 111, 109, 112, 97, 110, 105, 111, 110, 45, 108,
+      105, 110, 107, /* LABEL PTR */ 192, 21, /* QUERY TYPE */ 0, 12,
+      /* QUERY CLASS */ 0, 1, /* QUERY 3 */ /* LABEL */ 8, 95, 97, 105, 114, 112, 108,
+      97, 121, /* LABEL PTR */ 192, 21, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0,
+      1, /* QUERY 4 */ /* LABEL */ 5, 95, 114, 97, 111, 112, /* LABEL PTR */ 192, 21,
+      /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1, /* QUERY 5 */ /* LABEL */ 12,
+      95, 115, 108, 101, 101, 112, 45, 112, 114, 111, 120, 121, /* LABEL */ 4, 95, 117, 100,
+      112, /* LABEL PTR */ 192, 26, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1,
+      /* QUERY 6 */ /* LABEL PTR */ 192, 37, /* QUERY TYPE */ 0, 12,
+      /* QUERY CLASS */ 0, 1, 0, 0, 17, 148, 0, 11, 8, 77, 97, 99, 98, 111, 111, 107, 49, 192,
+      37, 0, 0, 41, 5, 160, 0, 0, 17, 148, 0, 18, 0, 4, 0, 14, 0, 5, 118, 66, 139, 236, 153, 136,
+      116, 66, 139, 236, 153, 136,
     ];
     let result = super::parse(&data);
     println!("result: {:?}", result);
@@ -996,6 +1089,86 @@ mod test {
       .map(|n| *n as char)
       .collect();
     println!("char data: {:?}", char_data);
+  }
+
+  #[test]
+  fn parse_label_compressed() {
+    let data = [193, 10];
+    let result = super::parse_label_compressed(&data);
+    assert_eq!(Ok(super::Label::Compressed(266)), result);
+  }
+
+  #[test]
+  fn parse_label_compressed_and_fail() {
+    let data = [193];
+    let result = super::parse_label_compressed(&data);
+    match result {
+      Err(super::ParseError::QueryLabelError(_)) => {}
+      _ => {
+        assert!(false);
+      }
+    }
+  }
+
+  #[test]
+  fn parse_label_normal() {
+    let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_normal(&data);
+    assert_eq!(
+      Ok(super::Label::Normal(Some("abcdefgh".to_owned()))),
+      result
+    );
+  }
+
+  #[test]
+  fn parse_label_normal_empty() {
+    let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_normal(&data);
+    assert_eq!(Ok(super::Label::Normal(None)), result);
+  }
+
+  #[test]
+  fn label_size_normal() {
+    let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_normal(&data);
+    assert_eq!(Ok(9), result.map(|r| r.size()));
+  }
+
+  #[test]
+  fn label_size_compressed() {
+    let data = [192, 10];
+    let result = super::parse_label_compressed(&data);
+    assert_eq!(Ok(2), result.map(|r| r.size()));
+  }
+
+  #[test]
+  fn parse_query_with_normal_labels() {
+    let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 0];
+    let result = super::parse_query_labels(&data);
+    assert_eq!(
+      Ok(vec![
+        super::Label::Normal(Some("abc".to_owned())),
+        super::Label::Normal(Some("de".to_owned())),
+        super::Label::Normal(Some("f".to_owned())),
+        super::Label::Normal(None),
+      ]),
+      result
+    );
+  }
+
+  #[test]
+  fn parse_query_with_normal_and_compressed_labels() {
+    let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 192, 10];
+    let result = super::parse_query_labels(&data);
+    assert_eq!(
+      Ok(vec![
+        super::Label::Normal(Some("abc".to_owned())),
+        super::Label::Normal(Some("de".to_owned())),
+        super::Label::Normal(Some("f".to_owned())),
+        super::Label::Compressed(10),
+      ]),
+      result
+    );
   }
 }
 
