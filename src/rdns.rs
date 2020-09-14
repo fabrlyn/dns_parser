@@ -117,6 +117,13 @@ enum Class {
   HS,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ResourceRecordType {
+  A,
+  AAAA,
+  Other(u16),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Label {
   Value(Option<String>),
@@ -202,6 +209,19 @@ https://tools.ietf.org/html/rfc1035 -> 4.1.1
 |                    ARCOUNT                    |
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
+
+fn parse_ttl(data: [u8; 4]) -> u32 {
+  (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
+}
+
+fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
+  let resource_record_type = (data[0] as u16) << 8 | data[1] as u16;
+  match resource_record_type {
+    1 => ResourceRecordType::A,
+    28 => ResourceRecordType::AAAA,
+    n => ResourceRecordType::Other(n),
+  }
+}
 
 fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
   let mut values = vec![];
@@ -1185,6 +1205,26 @@ mod test {
     let data = 0b00000000;
     let result = super::parse_q_response_type(data);
     assert_eq!(super::QuestionResponseType::QM, result);
+  }
+
+  #[test]
+  fn parse_resource_record_type() {
+    let data = &[
+      (super::ResourceRecordType::A, [0, 1]),
+      (super::ResourceRecordType::AAAA, [0, 28]),
+      (super::ResourceRecordType::Other(257), [1, 1]),
+    ];
+    for td in data {
+      let result = super::parse_resource_record_type(td.1);
+      assert_eq!(td.0, result);
+    }
+  }
+
+  #[test]
+  fn parse_ttl() {
+    let data = [1, 1, 1, 1];
+    let result = super::parse_ttl(data);
+    assert_eq!(16843009, result);
   }
 }
 
