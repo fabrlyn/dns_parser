@@ -169,8 +169,6 @@ const HEADER_SIZE: usize = 12;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const ADDR_ANY: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const MULTICAST_PORT: u16 = 5353;
-const QUERY_TYPE_SIZE: u8 = 2;
-const QUERY_CLASS_SIZE: u8 = 2;
 
 const LABEL_TYPE_MASK: u8 = 0b11000000;
 const LABEL_MASK_TYPE_NORMAL: u8 = 0b00000000;
@@ -209,7 +207,19 @@ fn parse_query_labels(data: &[u8]) -> Result<Vec<Label>, ParseError> {
   let mut labels = vec![];
   let mut index = 0;
 
+  if data.len() == 0 {
+    return Err(ParseError::QueryLabelError(
+      "Failed to parse query labels, zero length data".to_owned(),
+    ));
+  }
+
   loop {
+    if data.len() <= index {
+      return Err(ParseError::QueryLabelError(
+        "Index going out of bounds when parsing query labels".to_owned(),
+      ));
+    }
+
     let data = &data[index..];
     let label_type = LABEL_TYPE_MASK & data[0];
 
@@ -339,60 +349,6 @@ fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError>
     queries.push(query);
   }
   Ok(queries)
-}
-
-fn parse_question_query_name_label(data: &[u8]) -> Result<Option<String>, ParseError> {
-  let data_len = data.len();
-  if data_len == 0 {
-    return Err(ParseError::QueryLabelError(
-      "Data is zero length".to_owned(),
-    ));
-  }
-
-  let count = data[0];
-  if count == 0 {
-    return Ok(None);
-  }
-
-  if (count as usize) > (data_len - 1) {
-    return Err(ParseError::QueryLabelError(
-      "Wrong label count. Count would overflow data".to_owned(),
-    ));
-  }
-
-  if count > 63 {
-    return Err(ParseError::QueryLabelError(
-      "Count exceeds limit of 63".to_owned(),
-    ));
-  }
-
-  let label_data = &data[1..((count + 1) as usize)];
-  for &i in label_data {
-    if i == 0 {
-      return Err(ParseError::QueryLabelError(
-        "Zero encountered before end of label".to_owned(),
-      ));
-    }
-  }
-
-  std::str::from_utf8(label_data)
-    .map(|s| Some(s.to_owned()))
-    .map_err(|e| ParseError::QueryLabelError(e.to_string()))
-}
-
-fn parse_question_query_labels(data: &[u8]) -> Result<Vec<String>, ParseError> {
-  let mut name = vec![];
-  let mut previous_count = 0;
-  let mut data = &data[previous_count..];
-  loop {
-    if let Some(label) = parse_question_query_name_label(&data)? {
-      previous_count = label.len() + 1;
-      name.push(label);
-      data = &data[previous_count..];
-    } else {
-      return Ok(name);
-    }
-  }
 }
 
 fn copy_header(message: &[u8]) -> Result<RawHeader, ParseError> {
@@ -585,7 +541,7 @@ pub fn net_mdns() {
 
   let mut buf = [0u8; 65535];
   loop {
-    let (amt, src) = socket.recv_from(&mut buf).unwrap();
+    let (amt, _src) = socket.recv_from(&mut buf).unwrap();
     let header = parse(&buf[0..amt]);
     match header {
       Ok((header, queries)) => {
@@ -611,6 +567,7 @@ Message ID: 2
 QoR: Response(1)
 */
 mod test {
+  #[allow(dead_code)]
   const DATA_1: [u8; 383] = [
     0, 2, 132, 0, 0, 0, 0, 1, 0, 0, 0, 3, 11, 95, 103, 111, 111, 103, 108, 101, 99, 97, 115, 116,
     4, 95, 116, 99, 112, 5, 108, 111, 99, 97, 108, 0, 0, 12, 0, 1, 0, 0, 0, 120, 0, 52, 49, 71,
@@ -635,6 +592,7 @@ mod test {
   Message ID: 0
   QoR: Query(0)
   */
+  #[allow(dead_code)]
   const DATA_2: [u8; 154] = [
     0, 0, 0, 0, 0, 3, 0, 2, 0, 0, 0, 1, 8, 95, 104, 111, 109, 101, 107, 105, 116, 4, 95, 116, 99,
     112, 5, 108, 111, 99, 97, 108, 0, 0, 12, 0, 1, 15, 95, 99, 111, 109, 112, 97, 110, 105, 111,
@@ -865,20 +823,20 @@ mod test {
 
   #[test]
   fn parse_question_query_name_label_with_zero_length() {
-    if let Ok(_) = super::parse_question_query_name_label(&[]) {
+    if let Ok(_) = super::parse_query_labels(&[]) {
       assert!(false);
     }
   }
 
   #[test]
   fn parse_question_query_name_label_with_count_zero() {
-    let result = super::parse_question_query_name_label(&[0]);
-    assert_eq!(Ok(None), result);
+    let result = super::parse_query_labels(&[0]);
+    assert_eq!(Ok(vec![super::Label::Normal(None)]), result);
   }
 
   #[test]
   fn parse_question_query_name_label_with_overflowing_count() {
-    match super::parse_question_query_name_label(&[1]) {
+    match super::parse_query_labels(&[1]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       n => {
         assert!(false);
@@ -888,7 +846,7 @@ mod test {
 
   #[test]
   fn parse_question_query_name_label_with_higher_than_63() {
-    match super::parse_question_query_name_label(&[64]) {
+    match super::parse_query_labels(&[64]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -898,7 +856,7 @@ mod test {
 
   #[test]
   fn parse_question_query_name_label_with_premature_zero() {
-    match super::parse_question_query_name_label(&[4, 97, 98, 0, 99]) {
+    match super::parse_query_labels(&[4, 97, 98, 0, 99]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -908,8 +866,14 @@ mod test {
 
   #[test]
   fn parse_question_query_name_label_with_text_abc() {
-    let result = super::parse_question_query_name_label(&[3, 97, 98, 99]);
-    assert_eq!(Ok(Some("abc".to_owned())), result);
+    let result = super::parse_query_labels(&[3, 97, 98, 99, 0]);
+    assert_eq!(
+      Ok(vec![
+        super::Label::Normal(Some("abc".to_owned())),
+        super::Label::Normal(None)
+      ]),
+      result
+    );
   }
 
   #[test]
