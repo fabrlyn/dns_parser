@@ -210,6 +210,10 @@ https://tools.ietf.org/html/rfc1035 -> 4.1.1
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
 
+fn parse_resource_data_length(data: [u8; 2]) -> u16 {
+  (data[0] as u16) << 8 | data[1] as u16
+}
+
 fn parse_ttl(data: [u8; 4]) -> u32 {
   (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
 }
@@ -1225,6 +1229,15 @@ mod test {
     let data = [1, 1, 1, 1];
     let result = super::parse_ttl(data);
     assert_eq!(16843009, result);
+  }
+
+  #[test]
+  fn parse_resource_data_length() {
+    let data = [(0, [0, 0]), (1, [0, 1]), (257, [1, 1])];
+    for td in &data {
+      let result = super::parse_resource_data_length(td.1);
+      assert_eq!(td.0, result);
+    }
   }
 }
 
