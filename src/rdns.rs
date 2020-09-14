@@ -78,7 +78,7 @@ struct Header {
   ar_count: u16,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Type {
   Invalid,
   A,
@@ -99,7 +99,7 @@ enum Type {
   TXT,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum QType {
   Type(Type),
   AXFR,
@@ -141,23 +141,27 @@ enum QClass {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Query {
-  labels: Vec<String>,
+  labels: Vec<Label>,
+  q_response_type: QuestionResponseType,
   q_type: QType,
   q_class: QClass,
 }
 
+#[derive(PartialEq, Eq, Debug)]
+enum QuestionResponseType {
+  QU,
+  QM,
+}
+
 impl Query {
   fn size(&self) -> usize {
-    let mut sum = self
+    let q_type_size = 2;
+    let q_class_size = 2;
+
+    self
       .labels
       .iter()
-      .fold(self.labels.len(), |sum, s| sum + s.len());
-
-    if sum == 0 {
-      sum = 1;
-    }
-
-    sum + 2 + 2 + 1
+      .fold(q_type_size + q_class_size, |sum, s| sum + s.size())
   }
 }
 
@@ -237,8 +241,8 @@ fn parse(data: &[u8]) -> Result<(Header, Vec<Query>), ParseError> {
 }
 
 fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
-  let labels = parse_question_query_labels(data)?;
-  let mut offset = labels.iter().fold(labels.len() + 1, |sum, l| sum + l.len());
+  let labels = parse_query_labels(data)?;
+  let offset = labels.iter().fold(0, |sum, l| sum + l.size());
 
   if data.len() < offset + 4 {
     return Err(ParseError::QueryError(
@@ -248,7 +252,7 @@ fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
 
   let mut q_type_data: [u8; 2] = [0; 2];
   q_type_data.copy_from_slice(&data[offset..offset + 2]);
-  let q_type = parse_q_type(q_type_data);
+  let (q_response_type, q_type) = parse_q_type(q_type_data);
 
   let mut q_class_data: [u8; 2] = [0; 2];
   q_class_data.copy_from_slice(&data[offset + 2..offset + 4]);
@@ -256,6 +260,7 @@ fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
 
   Ok(Query {
     labels,
+    q_response_type,
     q_type,
     q_class,
   })
@@ -303,15 +308,26 @@ fn parse_type(data: [u8; 2]) -> Type {
   }
 }
 
-fn parse_q_type(data: [u8; 2]) -> QType {
-  let q_type = (data[0] as u16) << 8 | data[1] as u16;
-  match q_type {
-    252 => QType::AXFR,
-    253 => QType::MAILB,
-    254 => QType::MAILA,
-    255 => QType::Any,
-    _ => QType::Type(parse_type(data)),
+fn parse_q_response_type(data: u8) -> QuestionResponseType {
+  if (0b10000000 & data) == 0b10000000 {
+    return QuestionResponseType::QU;
   }
+  QuestionResponseType::QM
+}
+
+fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
+  let q_type = ((0b01111111 & data[0]) as u16) << 8 | data[1] as u16;
+  let response_type = parse_q_response_type(data[0]);
+  (
+    response_type,
+    match q_type {
+      252 => QType::AXFR,
+      253 => QType::MAILB,
+      254 => QType::MAILA,
+      255 => QType::Any,
+      _ => QType::Type(parse_type(data)),
+    },
+  )
 }
 
 fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError> {
@@ -938,7 +954,7 @@ mod test {
 
     for td in &test_data {
       let result = super::parse_q_type(td.0);
-      assert_eq!(td.1, result);
+      assert_eq!((super::QuestionResponseType::QM, td.1), result);
     }
   }
 
@@ -976,17 +992,23 @@ mod test {
   #[test]
   fn query_size_when_empty() {
     let query = super::Query {
-      labels: vec![],
+      labels: vec![super::Label::Normal(None)],
+      q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
       q_class: super::QClass::Any,
     };
-    assert_eq!(6, query.size());
+    assert_eq!(5, query.size());
   }
 
   #[test]
   fn query_size_with_two_labels() {
     let query = super::Query {
-      labels: vec!["abc".to_owned(), "de".to_owned()],
+      labels: vec![
+        super::Label::Normal(Some("abc".to_owned())),
+        super::Label::Normal(Some("de".to_owned())),
+        super::Label::Normal(None),
+      ],
+      q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
       q_class: super::QClass::Any,
     };
@@ -1009,7 +1031,8 @@ mod test {
     let result = super::parse_query(&data);
     assert_eq!(
       Ok(super::Query {
-        labels: vec![],
+        labels: vec![super::Label::Normal(None)],
+        q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN)
       }),
@@ -1025,7 +1048,13 @@ mod test {
     let result = super::parse_query(&data);
     assert_eq!(
       Ok(super::Query {
-        labels: vec!["abc".to_owned(), "de".to_owned(), "fghi".to_owned()],
+        labels: vec![
+          super::Label::Normal(Some("abc".to_owned())),
+          super::Label::Normal(Some("de".to_owned())),
+          super::Label::Normal(Some("fghi".to_owned())),
+          super::Label::Normal(None)
+        ],
+        q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN)
       }),
@@ -1049,12 +1078,24 @@ mod test {
     let result = super::parse_queries(&header, &data);
     let expected = Ok(vec![
       super::Query {
-        labels: vec!["abc".to_owned(), "de".to_owned(), "fghi".to_owned()],
+        labels: vec![
+          super::Label::Normal(Some("abc".to_owned())),
+          super::Label::Normal(Some("de".to_owned())),
+          super::Label::Normal(Some("fghi".to_owned())),
+          super::Label::Normal(None),
+        ],
+        q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN),
       },
       super::Query {
-        labels: vec!["ab".to_owned(), "cde".to_owned(), "fghi".to_owned()],
+        labels: vec![
+          super::Label::Normal(Some("ab".to_owned())),
+          super::Label::Normal(Some("cde".to_owned())),
+          super::Label::Normal(Some("fghi".to_owned())),
+          super::Label::Normal(None),
+        ],
+        q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN),
       },
@@ -1169,6 +1210,20 @@ mod test {
       ]),
       result
     );
+  }
+
+  #[test]
+  fn parse_q_response_type_for_unicast() {
+    let data = 0b10000000;
+    let result = super::parse_q_response_type(data);
+    assert_eq!(super::QuestionResponseType::QU, result);
+  }
+
+  #[test]
+  fn parse_q_response_type_for_multicast() {
+    let data = 0b00000000;
+    let result = super::parse_q_response_type(data);
+    assert_eq!(super::QuestionResponseType::QM, result);
   }
 }
 
