@@ -119,16 +119,16 @@ enum Class {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Label {
-  Normal(Option<String>),
-  Compressed(u16),
+  Value(Option<String>),
+  Pointer(u16),
 }
 
 impl Label {
   fn size(&self) -> usize {
     match self {
-      Label::Normal(Some(l)) => l.len() + 1,
-      Label::Normal(None) => 1,
-      Label::Compressed(_) => 2,
+      Label::Value(Some(l)) => l.len() + 1,
+      Label::Value(None) => 1,
+      Label::Pointer(_) => 2,
     }
   }
 }
@@ -141,7 +141,7 @@ enum QClass {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Query {
-  labels: Vec<Label>,
+  values: Vec<Label>,
   q_response_type: QuestionResponseType,
   q_type: QType,
   q_class: QClass,
@@ -159,7 +159,7 @@ impl Query {
     let q_class_size = 2;
 
     self
-      .labels
+      .values
       .iter()
       .fold(q_type_size + q_class_size, |sum, s| sum + s.size())
   }
@@ -171,8 +171,8 @@ const ADDR_ANY: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const MULTICAST_PORT: u16 = 5353;
 
 const LABEL_TYPE_MASK: u8 = 0b11000000;
-const LABEL_MASK_TYPE_NORMAL: u8 = 0b00000000;
-const LABEL_MASK_TYPE_COMPRESSED: u8 = 0b11000000;
+const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
+const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
 /*
 https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-srv-record/
@@ -203,20 +203,20 @@ https://tools.ietf.org/html/rfc1035 -> 4.1.1
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
 
-fn parse_query_labels(data: &[u8]) -> Result<Vec<Label>, ParseError> {
-  let mut labels = vec![];
+fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
+  let mut values = vec![];
   let mut index = 0;
 
   if data.len() == 0 {
     return Err(ParseError::QueryLabelError(
-      "Failed to parse query labels, zero length data".to_owned(),
+      "Failed to parse query values, zero length data".to_owned(),
     ));
   }
 
   loop {
     if data.len() <= index {
       return Err(ParseError::QueryLabelError(
-        "Index going out of bounds when parsing query labels".to_owned(),
+        "Index going out of bounds when parsing query values".to_owned(),
       ));
     }
 
@@ -224,18 +224,18 @@ fn parse_query_labels(data: &[u8]) -> Result<Vec<Label>, ParseError> {
     let label_type = LABEL_TYPE_MASK & data[0];
 
     let label = match label_type {
-      LABEL_MASK_TYPE_COMPRESSED => parse_label_compressed(data),
-      LABEL_MASK_TYPE_NORMAL => parse_label_normal(data),
+      LABEL_MASK_TYPE_POINTER => parse_label_pointer(data),
+      LABEL_MASK_TYPE_VALUE => parse_label_value(data),
       n => Err(ParseError::QueryLabelError(format!(
         "Unknown label type: {}",
         n
       ))),
     }?;
-    labels.push(label.clone());
+    values.push(label.clone());
 
     match label {
-      Label::Compressed(_) => return Ok(labels),
-      Label::Normal(None) => return Ok(labels),
+      Label::Pointer(_) => return Ok(values),
+      Label::Value(None) => return Ok(values),
       _ => {
         index += label.size();
       }
@@ -251,8 +251,8 @@ fn parse(data: &[u8]) -> Result<(Header, Vec<Query>), ParseError> {
 }
 
 fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
-  let labels = parse_query_labels(data)?;
-  let offset = labels.iter().fold(0, |sum, l| sum + l.size());
+  let values = parse_name(data)?;
+  let offset = values.iter().fold(0, |sum, l| sum + l.size());
 
   if data.len() < offset + 4 {
     return Err(ParseError::QueryError(
@@ -269,7 +269,7 @@ fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
   let q_class = parse_q_class(q_class_data);
 
   Ok(Query {
-    labels,
+    values,
     q_response_type,
     q_type,
     q_class,
@@ -475,7 +475,7 @@ fn parse_header_truncated(header: RawHeader) -> TC {
   }
 }
 
-fn parse_label_normal(data: &[u8]) -> Result<Label, ParseError> {
+fn parse_label_value(data: &[u8]) -> Result<Label, ParseError> {
   let data_len = data.len();
   if data_len == 0 {
     return Err(ParseError::QueryLabelError(
@@ -485,7 +485,7 @@ fn parse_label_normal(data: &[u8]) -> Result<Label, ParseError> {
 
   let count = data[0];
   if count == 0 {
-    return Ok(Label::Normal(None));
+    return Ok(Label::Value(None));
   }
 
   if count > 63 {
@@ -510,18 +510,18 @@ fn parse_label_normal(data: &[u8]) -> Result<Label, ParseError> {
   }
 
   std::str::from_utf8(label_data)
-    .map(|s| Label::Normal(Some(s.to_owned())))
+    .map(|s| Label::Value(Some(s.to_owned())))
     .map_err(|e| ParseError::QueryLabelError(e.to_string()))
 }
 
-fn parse_label_compressed(data: &[u8]) -> Result<Label, ParseError> {
+fn parse_label_pointer(data: &[u8]) -> Result<Label, ParseError> {
   if data.len() < 2 {
     return Err(ParseError::QueryLabelError(
-      "Trying to parse compressed label, but data is not long enough".to_owned(),
+      "Trying to parse pointer label, but data is not long enough".to_owned(),
     ));
   }
-  let pointer_value = ((!LABEL_MASK_TYPE_COMPRESSED & data[0]) as u16) << 8 | data[1] as u16;
-  Ok(Label::Compressed(pointer_value))
+  let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
+  Ok(Label::Pointer(pointer_value))
 }
 
 pub fn net_mdns() {
@@ -822,21 +822,21 @@ mod test {
   }
 
   #[test]
-  fn parse_question_query_name_label_with_zero_length() {
-    if let Ok(_) = super::parse_query_labels(&[]) {
+  fn parse_name_label_with_zero_length() {
+    if let Ok(_) = super::parse_name(&[]) {
       assert!(false);
     }
   }
 
   #[test]
-  fn parse_question_query_name_label_with_count_zero() {
-    let result = super::parse_query_labels(&[0]);
-    assert_eq!(Ok(vec![super::Label::Normal(None)]), result);
+  fn parse_name_with_count_zero() {
+    let result = super::parse_name(&[0]);
+    assert_eq!(Ok(vec![super::Label::Value(None)]), result);
   }
 
   #[test]
-  fn parse_question_query_name_label_with_overflowing_count() {
-    match super::parse_query_labels(&[1]) {
+  fn parse_name_with_overflowing_label_count() {
+    match super::parse_name(&[1]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       n => {
         assert!(false);
@@ -845,8 +845,8 @@ mod test {
   }
 
   #[test]
-  fn parse_question_query_name_label_with_higher_than_63() {
-    match super::parse_query_labels(&[64]) {
+  fn parse_name_with_label_higher_than_63_count() {
+    match super::parse_name(&[64]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -855,8 +855,8 @@ mod test {
   }
 
   #[test]
-  fn parse_question_query_name_label_with_premature_zero() {
-    match super::parse_query_labels(&[4, 97, 98, 0, 99]) {
+  fn parse_name_with_premature_zero_in_label() {
+    match super::parse_name(&[4, 97, 98, 0, 99]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -865,12 +865,12 @@ mod test {
   }
 
   #[test]
-  fn parse_question_query_name_label_with_text_abc() {
-    let result = super::parse_query_labels(&[3, 97, 98, 99, 0]);
+  fn parse_name_with_label_text_abc() {
+    let result = super::parse_name(&[3, 97, 98, 99, 0]);
     assert_eq!(
       Ok(vec![
-        super::Label::Normal(Some("abc".to_owned())),
-        super::Label::Normal(None)
+        super::Label::Value(Some("abc".to_owned())),
+        super::Label::Value(None)
       ]),
       result
     );
@@ -956,7 +956,7 @@ mod test {
   #[test]
   fn query_size_when_empty() {
     let query = super::Query {
-      labels: vec![super::Label::Normal(None)],
+      values: vec![super::Label::Value(None)],
       q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
       q_class: super::QClass::Any,
@@ -965,12 +965,12 @@ mod test {
   }
 
   #[test]
-  fn query_size_with_two_labels() {
+  fn query_size_with_two_values() {
     let query = super::Query {
-      labels: vec![
-        super::Label::Normal(Some("abc".to_owned())),
-        super::Label::Normal(Some("de".to_owned())),
-        super::Label::Normal(None),
+      values: vec![
+        super::Label::Value(Some("abc".to_owned())),
+        super::Label::Value(Some("de".to_owned())),
+        super::Label::Value(None),
       ],
       q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
@@ -990,12 +990,12 @@ mod test {
   }
 
   #[test]
-  fn parse_query_without_labels() {
+  fn parse_query_without_values() {
     let data = [0, 0, 1, 0, 1];
     let result = super::parse_query(&data);
     assert_eq!(
       Ok(super::Query {
-        labels: vec![super::Label::Normal(None)],
+        values: vec![super::Label::Value(None)],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN)
@@ -1005,18 +1005,18 @@ mod test {
   }
 
   #[test]
-  fn parse_query_with_three_labels() {
+  fn parse_query_with_three_values() {
     let data = [
       3, 97, 98, 99, 2, 100, 101, 4, 102, 103, 104, 105, 0, 0, 1, 0, 1,
     ];
     let result = super::parse_query(&data);
     assert_eq!(
       Ok(super::Query {
-        labels: vec![
-          super::Label::Normal(Some("abc".to_owned())),
-          super::Label::Normal(Some("de".to_owned())),
-          super::Label::Normal(Some("fghi".to_owned())),
-          super::Label::Normal(None)
+        values: vec![
+          super::Label::Value(Some("abc".to_owned())),
+          super::Label::Value(Some("de".to_owned())),
+          super::Label::Value(Some("fghi".to_owned())),
+          super::Label::Value(None)
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
@@ -1042,22 +1042,22 @@ mod test {
     let result = super::parse_queries(&header, &data);
     let expected = Ok(vec![
       super::Query {
-        labels: vec![
-          super::Label::Normal(Some("abc".to_owned())),
-          super::Label::Normal(Some("de".to_owned())),
-          super::Label::Normal(Some("fghi".to_owned())),
-          super::Label::Normal(None),
+        values: vec![
+          super::Label::Value(Some("abc".to_owned())),
+          super::Label::Value(Some("de".to_owned())),
+          super::Label::Value(Some("fghi".to_owned())),
+          super::Label::Value(None),
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN),
       },
       super::Query {
-        labels: vec![
-          super::Label::Normal(Some("ab".to_owned())),
-          super::Label::Normal(Some("cde".to_owned())),
-          super::Label::Normal(Some("fghi".to_owned())),
-          super::Label::Normal(None),
+        values: vec![
+          super::Label::Value(Some("ab".to_owned())),
+          super::Label::Value(Some("cde".to_owned())),
+          super::Label::Value(Some("fghi".to_owned())),
+          super::Label::Value(None),
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
@@ -1097,16 +1097,16 @@ mod test {
   }
 
   #[test]
-  fn parse_label_compressed() {
+  fn parse_label_pointer() {
     let data = [193, 10];
-    let result = super::parse_label_compressed(&data);
-    assert_eq!(Ok(super::Label::Compressed(266)), result);
+    let result = super::parse_label_pointer(&data);
+    assert_eq!(Ok(super::Label::Pointer(266)), result);
   }
 
   #[test]
-  fn parse_label_compressed_and_fail() {
+  fn parse_label_pointer_and_fail() {
     let data = [193];
-    let result = super::parse_label_compressed(&data);
+    let result = super::parse_label_pointer(&data);
     match result {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
@@ -1116,61 +1116,58 @@ mod test {
   }
 
   #[test]
-  fn parse_label_normal() {
+  fn parse_label_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_normal(&data);
-    assert_eq!(
-      Ok(super::Label::Normal(Some("abcdefgh".to_owned()))),
-      result
-    );
+    let result = super::parse_label_value(&data);
+    assert_eq!(Ok(super::Label::Value(Some("abcdefgh".to_owned()))), result);
   }
 
   #[test]
-  fn parse_label_normal_empty() {
+  fn parse_label_value_empty() {
     let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_normal(&data);
-    assert_eq!(Ok(super::Label::Normal(None)), result);
+    let result = super::parse_label_value(&data);
+    assert_eq!(Ok(super::Label::Value(None)), result);
   }
 
   #[test]
-  fn label_size_normal() {
+  fn label_size_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_normal(&data);
+    let result = super::parse_label_value(&data);
     assert_eq!(Ok(9), result.map(|r| r.size()));
   }
 
   #[test]
-  fn label_size_compressed() {
+  fn label_size_pointer() {
     let data = [192, 10];
-    let result = super::parse_label_compressed(&data);
+    let result = super::parse_label_pointer(&data);
     assert_eq!(Ok(2), result.map(|r| r.size()));
   }
 
   #[test]
-  fn parse_query_with_normal_labels() {
+  fn parse_query_with_value_values() {
     let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 0];
-    let result = super::parse_query_labels(&data);
+    let result = super::parse_name(&data);
     assert_eq!(
       Ok(vec![
-        super::Label::Normal(Some("abc".to_owned())),
-        super::Label::Normal(Some("de".to_owned())),
-        super::Label::Normal(Some("f".to_owned())),
-        super::Label::Normal(None),
+        super::Label::Value(Some("abc".to_owned())),
+        super::Label::Value(Some("de".to_owned())),
+        super::Label::Value(Some("f".to_owned())),
+        super::Label::Value(None),
       ]),
       result
     );
   }
 
   #[test]
-  fn parse_query_with_normal_and_compressed_labels() {
+  fn parse_query_with_value_and_pointer_values() {
     let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 192, 10];
-    let result = super::parse_query_labels(&data);
+    let result = super::parse_name(&data);
     assert_eq!(
       Ok(vec![
-        super::Label::Normal(Some("abc".to_owned())),
-        super::Label::Normal(Some("de".to_owned())),
-        super::Label::Normal(Some("f".to_owned())),
-        super::Label::Compressed(10),
+        super::Label::Value(Some("abc".to_owned())),
+        super::Label::Value(Some("de".to_owned())),
+        super::Label::Value(Some("f".to_owned())),
+        super::Label::Pointer(10),
       ]),
       result
     );
