@@ -55,6 +55,7 @@ enum ParseError {
   HeaderError(String),
   QueryLabelError(String),
   QueryError(String),
+  ResourceRecordError(String),
 }
 
 type MessageId = u16;
@@ -160,6 +161,48 @@ enum QuestionResponseType {
   QM,
 }
 
+#[derive(Debug)]
+enum ResourceRecordData {
+  A(std::net::Ipv4Addr),
+  Other(Vec<u8>),
+}
+
+impl ResourceRecordData {
+  fn size(&self) -> usize {
+    match self {
+      ResourceRecordData::A(_) => 4,
+      ResourceRecordData::Other(v) => v.len(),
+    }
+  }
+}
+
+#[derive(Debug)]
+struct ResourceRecord {
+  name: Vec<Label>,
+  resource_record_type: ResourceRecordType,
+  class: Class,
+  ttl: u32,
+  resource_record_data_length: u16,
+  resource_record_data: ResourceRecordData,
+}
+
+impl ResourceRecord {
+  fn size(&self) -> usize {
+    let type_length = 2;
+    let class_length = 2;
+    let ttl_length = 4;
+    let data_length_length = 2;
+    let name_size = self.name.iter().fold(0, |sum, l| sum + l.size());
+
+    self.resource_record_data.size()
+      + type_length
+      + class_length
+      + ttl_length
+      + data_length_length
+      + name_size
+  }
+}
+
 impl Query {
   fn size(&self) -> usize {
     let q_type_size = 2;
@@ -209,6 +252,48 @@ https://tools.ietf.org/html/rfc1035 -> 4.1.1
 |                    ARCOUNT                    |
 +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
 */
+
+fn parse_resource_record_data(
+  resource_record_type: &ResourceRecordType,
+  class: &Class,
+  resource_data_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  if data.len() <= resource_data_length as usize {
+    return Err(ParseError::ResourceRecordError(
+      "Data would overflow parsing resource record data".to_owned(),
+    ));
+  }
+
+  match resource_record_type {
+    ResourceRecordType::A => parse_resource_record_data_ip_a(resource_data_length, data),
+    _ => parse_resource_record_data_other(resource_data_length, data),
+  }
+}
+
+fn parse_resource_record_data_other(
+  resource_data_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  Ok(ResourceRecordData::Other(Vec::from(
+    &data[0..(resource_data_length as usize)],
+  )))
+}
+
+fn parse_resource_record_data_ip_a(
+  resource_data_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  if data.len() < 4 {
+    return Err(ParseError::ResourceRecordError(
+      "Data would overflow when parsing IPv4 resource".to_owned(),
+    ));
+  }
+
+  Ok(ResourceRecordData::A(std::net::Ipv4Addr::new(
+    data[0], data[1], data[3], data[4],
+  )))
+}
 
 fn parse_resource_data_length(data: [u8; 2]) -> u16 {
   (data[0] as u16) << 8 | data[1] as u16
@@ -267,11 +352,20 @@ fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
   }
 }
 
-fn parse(data: &[u8]) -> Result<(Header, Vec<Query>), ParseError> {
+fn parse(data: &[u8]) -> Result<(Header, Vec<Query>, Vec<ResourceRecord>), ParseError> {
   let raw_header = copy_header(data)?;
   let header = parse_header(raw_header);
+
+  println!("HEADER: {:?}", header);
+
   let queries = parse_queries(&header, &data[12..])?;
-  Ok((header, queries))
+  let queries_length = queries.iter().fold(0, |sum, q| sum + q.size());
+
+  println!("QUERIES: {:?}", queries);
+
+  let answers = parse_answers(&header, &data[12 + queries_length..])?;
+
+  Ok((header, queries, answers))
 }
 
 fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
@@ -375,6 +469,59 @@ fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError>
   Ok(queries)
 }
 
+fn parse_resource_record(data: &[u8]) -> Result<ResourceRecord, ParseError> {
+  println!("parse_resource_record | data: {:?}", data);
+  let name = parse_name(data)?;
+  let next_index = name.iter().fold(0, |sum, l| sum + l.size());
+
+  let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
+  let resource_record_type = parse_resource_record_type(resource_record_type_data);
+
+  let resource_record_class_data: [u8; 2] = [data[next_index + 2], data[next_index + 3]];
+  let resource_record_class = parse_class(resource_record_class_data);
+
+  let ttl_data: [u8; 4] = [
+    data[next_index + 4],
+    data[next_index + 5],
+    data[next_index + 6],
+    data[next_index + 7],
+  ];
+  let ttl = parse_ttl(ttl_data);
+
+  let resource_record_data_length_data: [u8; 2] = [data[next_index + 8], data[next_index + 9]];
+  let resource_record_data_length = parse_resource_data_length(resource_record_data_length_data);
+
+  let resource_record_data_data = &data[next_index + 10..];
+  let resource_record_data = parse_resource_record_data(
+    &resource_record_type,
+    &resource_record_class,
+    resource_record_data_length,
+    resource_record_data_data,
+  )?;
+
+  Ok(ResourceRecord {
+    name,
+    resource_record_type,
+    class: resource_record_class,
+    ttl,
+    resource_record_data_length,
+    resource_record_data,
+  })
+}
+
+fn parse_answers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
+  let mut answers = vec![];
+  let mut previous_index = 0;
+  for _ in 0..header.an_count {
+    println!("index: {:?}", previous_index);
+    println!("data: {:?}", &data[previous_index..]);
+    let answer = parse_resource_record(&data[previous_index..])?;
+    println!("answer: {:?}\n", answer);
+    previous_index += answer.size();
+    answers.push(answer);
+  }
+  Ok(answers)
+}
 fn copy_header(message: &[u8]) -> Result<RawHeader, ParseError> {
   if message.len() < HEADER_SIZE {
     return Err(ParseError::HeaderError(String::from(
@@ -568,9 +715,10 @@ pub fn net_mdns() {
     let (amt, _src) = socket.recv_from(&mut buf).unwrap();
     let header = parse(&buf[0..amt]);
     match header {
-      Ok((header, queries)) => {
+      Ok((header, queries, answers)) => {
         println!("header: {:?}", header);
         println!("queries: {:?}", queries);
+        println!("answers: {:?}", answers);
       }
       Err(e) => {
         println!("Failed to parse header: {:?}", e);
@@ -1093,34 +1241,6 @@ mod test {
   }
 
   #[test]
-  fn parse_test() {
-    let data = [
-      /* HEADER */ 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 1, /* QUERY 1 */ /* LABEL */ 8, 95,
-      104, 111, 109, 101, 107, 105, 116, /* LABEL */ 4, 95, 116, 99, 112, /* LABEL */ 5,
-      108, 111, 99, 97, 108, 0, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1,
-      /* QUERY 2 */ /* LABEL */ 15, 95, 99, 111, 109, 112, 97, 110, 105, 111, 110, 45, 108,
-      105, 110, 107, /* LABEL PTR */ 192, 21, /* QUERY TYPE */ 0, 12,
-      /* QUERY CLASS */ 0, 1, /* QUERY 3 */ /* LABEL */ 8, 95, 97, 105, 114, 112, 108,
-      97, 121, /* LABEL PTR */ 192, 21, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0,
-      1, /* QUERY 4 */ /* LABEL */ 5, 95, 114, 97, 111, 112, /* LABEL PTR */ 192, 21,
-      /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1, /* QUERY 5 */ /* LABEL */ 12,
-      95, 115, 108, 101, 101, 112, 45, 112, 114, 111, 120, 121, /* LABEL */ 4, 95, 117, 100,
-      112, /* LABEL PTR */ 192, 26, /* QUERY TYPE */ 0, 12, /* QUERY CLASS */ 0, 1,
-      /* QUERY 6 */ /* LABEL PTR */ 192, 37, /* QUERY TYPE */ 0, 12,
-      /* QUERY CLASS */ 0, 1, 0, 0, 17, 148, 0, 11, 8, 77, 97, 99, 98, 111, 111, 107, 49, 192,
-      37, 0, 0, 41, 5, 160, 0, 0, 17, 148, 0, 18, 0, 4, 0, 14, 0, 5, 118, 66, 139, 236, 153, 136,
-      116, 66, 139, 236, 153, 136,
-    ];
-    let result = super::parse(&data);
-    println!("result: {:?}", result);
-    let char_data: String = data[(8 + 1 + 4 + 1 + 5 + 1 + 12)..]
-      .iter()
-      .map(|n| *n as char)
-      .collect();
-    println!("char data: {:?}", char_data);
-  }
-
-  #[test]
   fn parse_label_pointer() {
     let data = [193, 10];
     let result = super::parse_label_pointer(&data);
@@ -1236,6 +1356,54 @@ mod test {
     let data = [(0, [0, 0]), (1, [0, 1]), (257, [1, 1])];
     for td in &data {
       let result = super::parse_resource_data_length(td.1);
+      assert_eq!(td.0, result);
+    }
+  }
+
+  #[test]
+  fn resource_data_size() {
+    let data = [
+      (
+        8,
+        super::ResourceRecordData::Other(vec![1, 2, 3, 4, 5, 6, 7, 8]),
+      ),
+      (
+        4,
+        super::ResourceRecordData::A(std::net::Ipv4Addr::new(192, 168, 0, 158)),
+      ),
+    ];
+
+    for td in &data {
+      let result = td.1.size();
+      assert_eq!(td.0, result);
+    }
+  }
+
+  #[test]
+  fn resource_record_size() {
+    let data = [(
+      26,
+      super::ResourceRecord {
+        name: vec![
+          super::Label::Value(Some("abc".to_owned())),
+          super::Label::Value(None),
+        ],
+        resource_record_type: super::ResourceRecordType::Other(12),
+        class: super::Class::IN,
+        ttl: 4500,
+        resource_record_data_length: 11,
+        resource_record_data: super::ResourceRecordData::Other(vec![
+          1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        ]),
+      },
+    )];
+
+    for td in &data {
+      for q in &td.1.name {
+        println!("q size: {:?}", q.size());
+      }
+
+      let result = td.1.size();
       assert_eq!(td.0, result);
     }
   }
