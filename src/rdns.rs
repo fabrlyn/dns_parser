@@ -259,7 +259,7 @@ fn parse_resource_record_data(
   resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
-  if data.len() <= resource_data_length as usize {
+  if data.len() < resource_data_length as usize {
     return Err(ParseError::ResourceRecordError(
       "Data would overflow parsing resource record data".to_owned(),
     ));
@@ -291,7 +291,7 @@ fn parse_resource_record_data_ip_a(
   }
 
   Ok(ResourceRecordData::A(std::net::Ipv4Addr::new(
-    data[0], data[1], data[3], data[4],
+    data[0], data[1], data[2], data[3],
   )))
 }
 
@@ -352,20 +352,36 @@ fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
   }
 }
 
-fn parse(data: &[u8]) -> Result<(Header, Vec<Query>, Vec<ResourceRecord>), ParseError> {
+fn parse(
+  data: &[u8],
+) -> Result<
+  (
+    Header,
+    Vec<Query>,
+    Vec<ResourceRecord>,
+    Vec<ResourceRecord>,
+    Vec<ResourceRecord>,
+  ),
+  ParseError,
+> {
   let raw_header = copy_header(data)?;
   let header = parse_header(raw_header);
 
-  println!("HEADER: {:?}", header);
-
   let queries = parse_queries(&header, &data[12..])?;
-  let queries_length = queries.iter().fold(0, |sum, q| sum + q.size());
+  let queries_length = queries.iter().fold(12, |sum, q| sum + q.size());
 
-  println!("QUERIES: {:?}", queries);
+  let answers = parse_answers(&header, &data[queries_length..])?;
+  let answers_length = answers.iter().fold(queries_length, |sum, a| sum + a.size());
 
-  let answers = parse_answers(&header, &data[12 + queries_length..])?;
+  let name_server_resources = parse_name_servers(&header, &data[answers_length..])?;
+  let name_server_resources_length = name_server_resources
+    .iter()
+    .fold(answers_length, |sum, r| sum + r.size());
 
-  Ok((header, queries, answers))
+  let additional =
+    parse_additional_resource_records(&header, &data[name_server_resources_length..])?;
+
+  Ok((header, queries, answers, name_server_resources, additional))
 }
 
 fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
@@ -470,7 +486,6 @@ fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError>
 }
 
 fn parse_resource_record(data: &[u8]) -> Result<ResourceRecord, ParseError> {
-  println!("parse_resource_record | data: {:?}", data);
   let name = parse_name(data)?;
   let next_index = name.iter().fold(0, |sum, l| sum + l.size());
 
@@ -509,19 +524,32 @@ fn parse_resource_record(data: &[u8]) -> Result<ResourceRecord, ParseError> {
   })
 }
 
-fn parse_answers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
+fn parse_resource_records(count: u16, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
   let mut answers = vec![];
   let mut previous_index = 0;
-  for _ in 0..header.an_count {
-    println!("index: {:?}", previous_index);
-    println!("data: {:?}", &data[previous_index..]);
+  for _ in 0..count {
     let answer = parse_resource_record(&data[previous_index..])?;
-    println!("answer: {:?}\n", answer);
     previous_index += answer.size();
     answers.push(answer);
   }
   Ok(answers)
 }
+
+fn parse_additional_resource_records(
+  header: &Header,
+  data: &[u8],
+) -> Result<Vec<ResourceRecord>, ParseError> {
+  parse_resource_records(header.ar_count, data)
+}
+
+fn parse_name_servers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
+  parse_resource_records(header.ns_count, data)
+}
+
+fn parse_answers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
+  parse_resource_records(header.an_count, data)
+}
+
 fn copy_header(message: &[u8]) -> Result<RawHeader, ParseError> {
   if message.len() < HEADER_SIZE {
     return Err(ParseError::HeaderError(String::from(
@@ -715,10 +743,12 @@ pub fn net_mdns() {
     let (amt, _src) = socket.recv_from(&mut buf).unwrap();
     let header = parse(&buf[0..amt]);
     match header {
-      Ok((header, queries, answers)) => {
+      Ok((header, queries, answers, name_servers, additional)) => {
         println!("header: {:?}", header);
         println!("queries: {:?}", queries);
         println!("answers: {:?}", answers);
+        println!("name_servers: {:?}", name_servers);
+        println!("additional: {:?}", additional);
       }
       Err(e) => {
         println!("Failed to parse header: {:?}", e);
@@ -726,11 +756,13 @@ pub fn net_mdns() {
     }
 
     //println!("received {} bytes from {:?}", amt, src);
+    /*
     let data = &mut buf[..amt];
     for i in data {
       print!("{:?}, ", i);
     }
     println!("\n");
+    */
   }
 }
 
@@ -1399,10 +1431,6 @@ mod test {
     )];
 
     for td in &data {
-      for q in &td.1.name {
-        println!("q size: {:?}", q.size());
-      }
-
       let result = td.1.size();
       assert_eq!(td.0, result);
     }
