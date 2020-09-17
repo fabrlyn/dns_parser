@@ -1,6 +1,20 @@
 use net2::unix::UnixUdpBuilderExt;
 use std::net::Ipv4Addr;
 
+/*
+https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-srv-record/
+
+https://tools.ietf.org/html/rfc5395
+https://tools.ietf.org/html/rfc2136
+https://tools.ietf.org/html/rfc6195
+
+https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
+
+https://flylib.com/books/en/3.223.1.151/1/
+
+https://tools.ietf.org/html/rfc1035 -> 4.1.1
+*/
+
 #[derive(Debug, PartialEq, Eq)]
 enum RCode {
   NoError,
@@ -224,38 +238,9 @@ const LABEL_TYPE_MASK: u8 = 0b11000000;
 const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
 const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
-/*
-https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-srv-record/
-
-https://tools.ietf.org/html/rfc5395 -> Has packet structure
-https://tools.ietf.org/html/rfc2136
-https://tools.ietf.org/html/rfc6195
-
-https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml
-
-https://flylib.com/books/en/3.223.1.151/1/ <- Pretty clear
-
-https://tools.ietf.org/html/rfc1035 -> 4.1.1
-                              1  1  1  1  1  1
-0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|                      ID                       |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|QR|   OpCode  |AA|TC|RD|RA| Z|AD|CD|   RCODE   |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|                QDCOUNT/ZOCOUNT                |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|                ANCOUNT/PRCOUNT                |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|                NSCOUNT/UPCOUNT                |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-|                    ARCOUNT                    |
-+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
-*/
-
 fn parse_resource_record_data(
   resource_record_type: &ResourceRecordType,
-  class: &Class,
+  _class: &Class,
   resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
@@ -281,7 +266,7 @@ fn parse_resource_record_data_other(
 }
 
 fn parse_resource_record_data_ip_a(
-  resource_data_length: u16,
+  _resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
   if data.len() < 4 {
@@ -1042,7 +1027,7 @@ mod test {
   fn parse_name_with_overflowing_label_count() {
     match super::parse_name(&[1]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
-      n => {
+      _ => {
         assert!(false);
       }
     }
@@ -1436,12 +1421,3 @@ mod test {
     }
   }
 }
-
-/*
-
-A Domain Name point to a Node.
-A node can have zero or more Resource Records
-Resource Records containing the same: NAME, CLASS, TYPE, are consider to belong to the same Resource Record Set
-A Resource Record is consider unique based on the above Set rule including also comparing: RDLENGTH and RDATA
-
-*/
