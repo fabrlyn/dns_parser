@@ -141,16 +141,16 @@ enum ResourceRecordType {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Label {
-  Value(Option<String>),
-  Pointer(u16),
+  Value(u16, Option<String>),
+  Pointer(u16, u16),
 }
 
 impl Label {
   fn size(&self) -> usize {
     match self {
-      Label::Value(Some(l)) => l.len() + 1,
-      Label::Value(None) => 1,
-      Label::Pointer(_) => 2,
+      Label::Value(_, Some(l)) => l.len() + 1,
+      Label::Value(_, None) => 1,
+      Label::Pointer(_, _) => 2,
     }
   }
 }
@@ -229,6 +229,15 @@ impl Query {
   }
 }
 
+#[derive(Debug)]
+struct Message {
+  header: Header,
+  queries: Vec<Query>,
+  answers: Vec<ResourceRecord>,
+  name_servers: Vec<ResourceRecord>,
+  additional_records: Vec<ResourceRecord>,
+}
+
 const HEADER_SIZE: usize = 12;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const ADDR_ANY: Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
@@ -297,9 +306,10 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
   }
 }
 
-fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
+fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseError> {
   let mut values = vec![];
   let mut index = 0;
+  let mut current_offset = start_offset;
 
   if data.len() == 0 {
     return Err(ParseError::QueryLabelError(
@@ -318,18 +328,19 @@ fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
     let label_type = LABEL_TYPE_MASK & data[0];
 
     let label = match label_type {
-      LABEL_MASK_TYPE_POINTER => parse_label_pointer(data),
-      LABEL_MASK_TYPE_VALUE => parse_label_value(data),
+      LABEL_MASK_TYPE_POINTER => parse_label_pointer(current_offset, data),
+      LABEL_MASK_TYPE_VALUE => parse_label_value(current_offset, data),
       n => Err(ParseError::QueryLabelError(format!(
         "Unknown label type: {}",
         n
       ))),
     }?;
+    current_offset += label.size() as u16;
     values.push(label.clone());
 
     match label {
-      Label::Pointer(_) => return Ok(values),
-      Label::Value(None) => return Ok(values),
+      Label::Pointer(_, _) => return Ok(values),
+      Label::Value(_, None) => return Ok(values),
       _ => {
         index += label.size();
       }
@@ -337,40 +348,42 @@ fn parse_name(data: &[u8]) -> Result<Vec<Label>, ParseError> {
   }
 }
 
-fn parse(
-  data: &[u8],
-) -> Result<
-  (
-    Header,
-    Vec<Query>,
-    Vec<ResourceRecord>,
-    Vec<ResourceRecord>,
-    Vec<ResourceRecord>,
-  ),
-  ParseError,
-> {
+fn parse(data: &[u8]) -> Result<Message, ParseError> {
   let raw_header = copy_header(data)?;
   let header = parse_header(raw_header);
 
-  let queries = parse_queries(&header, &data[12..])?;
-  let queries_length = queries.iter().fold(12, |sum, q| sum + q.size());
+  let offset = 12;
 
-  let answers = parse_answers(&header, &data[queries_length..])?;
-  let answers_length = answers.iter().fold(queries_length, |sum, a| sum + a.size());
+  let queries = parse_queries(offset, &header, &data[offset as usize..])?;
+  let queries_length = queries.iter().fold(offset, |sum, q| sum + q.size() as u16);
 
-  let name_server_resources = parse_name_servers(&header, &data[answers_length..])?;
-  let name_server_resources_length = name_server_resources
+  let answers = parse_answers(queries_length, &header, &data[queries_length as usize..])?;
+  let answers_length = answers
     .iter()
-    .fold(answers_length, |sum, r| sum + r.size());
+    .fold(queries_length, |sum, a| sum + a.size() as u16);
 
-  let additional =
-    parse_additional_resource_records(&header, &data[name_server_resources_length..])?;
+  let name_servers = parse_name_servers(answers_length, &header, &data[answers_length as usize..])?;
+  let name_server_resources_length = name_servers
+    .iter()
+    .fold(answers_length, |sum, r| sum + r.size() as u16);
 
-  Ok((header, queries, answers, name_server_resources, additional))
+  let additional_records = parse_additional_resource_records(
+    name_server_resources_length,
+    &header,
+    &data[name_server_resources_length as usize..],
+  )?;
+
+  Ok(Message {
+    header,
+    queries,
+    answers,
+    name_servers,
+    additional_records,
+  })
 }
 
-fn parse_query(data: &[u8]) -> Result<Query, ParseError> {
-  let values = parse_name(data)?;
+fn parse_query(current_offset: u16, data: &[u8]) -> Result<Query, ParseError> {
+  let values = parse_name(current_offset, data)?;
   let offset = values.iter().fold(0, |sum, l| sum + l.size());
 
   if data.len() < offset + 4 {
@@ -459,19 +472,66 @@ fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
   )
 }
 
-fn parse_queries(header: &Header, data: &[u8]) -> Result<Vec<Query>, ParseError> {
+fn read_until_termination_label_from_offset(labels: Vec<Label>, pointer_offset: u16) -> Vec<Label> {
+  let mut end_found = false;
+  labels
+    .into_iter()
+    .skip_while(|l| match l {
+      Label::Value(offset, _) => *offset != pointer_offset,
+      _ => true,
+    })
+    .take_while(|l| {
+      if end_found {
+        return false;
+      }
+
+      match l {
+        Label::Value(_, None) => {
+          end_found = true;
+          true
+        }
+        _ => true,
+      }
+    })
+    .collect()
+}
+
+fn resolve_name(all_labels: Vec<Label>, to_resolve: Vec<Label>) -> Vec<Label> {
+  to_resolve
+    .iter()
+    .fold(vec![], |mut labels, label| match label {
+      Label::Pointer(_, pointer) => {
+        read_until_termination_label_from_offset(all_labels.clone(), *pointer)
+          .into_iter()
+          .for_each(|l| labels.push(l));
+        labels
+      }
+      label => {
+        labels.push(label.clone());
+        labels
+      }
+    })
+}
+
+fn parse_queries(
+  start_offset: u16,
+  header: &Header,
+  data: &[u8],
+) -> Result<Vec<Query>, ParseError> {
   let mut queries = vec![];
   let mut previous_index = 0;
+  let mut current_offset = start_offset;
   for _ in 0..header.qd_count {
-    let query = parse_query(&data[previous_index..])?;
+    let query = parse_query(current_offset, &data[previous_index..])?;
     previous_index += query.size();
+    current_offset += query.size() as u16;
     queries.push(query);
   }
   Ok(queries)
 }
 
-fn parse_resource_record(data: &[u8]) -> Result<ResourceRecord, ParseError> {
-  let name = parse_name(data)?;
+fn parse_resource_record(start_offset: u16, data: &[u8]) -> Result<ResourceRecord, ParseError> {
+  let name = parse_name(start_offset, data)?;
   let next_index = name.iter().fold(0, |sum, l| sum + l.size());
 
   let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
@@ -509,30 +569,45 @@ fn parse_resource_record(data: &[u8]) -> Result<ResourceRecord, ParseError> {
   })
 }
 
-fn parse_resource_records(count: u16, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
+fn parse_resource_records(
+  start_offset: u16,
+  count: u16,
+  data: &[u8],
+) -> Result<Vec<ResourceRecord>, ParseError> {
   let mut answers = vec![];
   let mut previous_index = 0;
+  let mut current_offset = start_offset;
   for _ in 0..count {
-    let answer = parse_resource_record(&data[previous_index..])?;
+    let answer = parse_resource_record(current_offset, &data[previous_index..])?;
     previous_index += answer.size();
+    current_offset += answer.size() as u16;
     answers.push(answer);
   }
   Ok(answers)
 }
 
 fn parse_additional_resource_records(
+  start_offset: u16,
   header: &Header,
   data: &[u8],
 ) -> Result<Vec<ResourceRecord>, ParseError> {
-  parse_resource_records(header.ar_count, data)
+  parse_resource_records(start_offset, header.ar_count, data)
 }
 
-fn parse_name_servers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
-  parse_resource_records(header.ns_count, data)
+fn parse_name_servers(
+  start_offset: u16,
+  header: &Header,
+  data: &[u8],
+) -> Result<Vec<ResourceRecord>, ParseError> {
+  parse_resource_records(start_offset, header.ns_count, data)
 }
 
-fn parse_answers(header: &Header, data: &[u8]) -> Result<Vec<ResourceRecord>, ParseError> {
-  parse_resource_records(header.an_count, data)
+fn parse_answers(
+  start_offset: u16,
+  header: &Header,
+  data: &[u8],
+) -> Result<Vec<ResourceRecord>, ParseError> {
+  parse_resource_records(start_offset, header.an_count, data)
 }
 
 fn copy_header(message: &[u8]) -> Result<RawHeader, ParseError> {
@@ -659,7 +734,7 @@ fn parse_header_truncated(header: RawHeader) -> TC {
   }
 }
 
-fn parse_label_value(data: &[u8]) -> Result<Label, ParseError> {
+fn parse_label_value(current_offset: u16, data: &[u8]) -> Result<Label, ParseError> {
   let data_len = data.len();
   if data_len == 0 {
     return Err(ParseError::QueryLabelError(
@@ -669,7 +744,7 @@ fn parse_label_value(data: &[u8]) -> Result<Label, ParseError> {
 
   let count = data[0];
   if count == 0 {
-    return Ok(Label::Value(None));
+    return Ok(Label::Value(current_offset, None));
   }
 
   if count > 63 {
@@ -694,18 +769,18 @@ fn parse_label_value(data: &[u8]) -> Result<Label, ParseError> {
   }
 
   std::str::from_utf8(label_data)
-    .map(|s| Label::Value(Some(s.to_owned())))
+    .map(|s| Label::Value(current_offset, Some(s.to_owned())))
     .map_err(|e| ParseError::QueryLabelError(e.to_string()))
 }
 
-fn parse_label_pointer(data: &[u8]) -> Result<Label, ParseError> {
+fn parse_label_pointer(current_offset: u16, data: &[u8]) -> Result<Label, ParseError> {
   if data.len() < 2 {
     return Err(ParseError::QueryLabelError(
       "Trying to parse pointer label, but data is not long enough".to_owned(),
     ));
   }
   let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
-  Ok(Label::Pointer(pointer_value))
+  Ok(Label::Pointer(current_offset, pointer_value))
 }
 
 pub fn net_mdns() {
@@ -728,12 +803,12 @@ pub fn net_mdns() {
     let (amt, _src) = socket.recv_from(&mut buf).unwrap();
     let header = parse(&buf[0..amt]);
     match header {
-      Ok((header, queries, answers, name_servers, additional)) => {
-        println!("header: {:?}", header);
-        println!("queries: {:?}", queries);
-        println!("answers: {:?}", answers);
-        println!("name_servers: {:?}", name_servers);
-        println!("additional: {:?}", additional);
+      Ok(message) => {
+        println!("header: {:?}", message.header);
+        println!("queries: {:?}", message.queries);
+        println!("answers: {:?}", message.answers);
+        println!("name_servers: {:?}", message.name_servers);
+        println!("additional: {:?}", message.additional_records);
       }
       Err(e) => {
         println!("Failed to parse header: {:?}", e);
@@ -741,13 +816,11 @@ pub fn net_mdns() {
     }
 
     //println!("received {} bytes from {:?}", amt, src);
-    /*
     let data = &mut buf[..amt];
     for i in data {
       print!("{:?}, ", i);
     }
     println!("\n");
-    */
   }
 }
 
@@ -1012,20 +1085,20 @@ mod test {
 
   #[test]
   fn parse_name_label_with_zero_length() {
-    if let Ok(_) = super::parse_name(&[]) {
+    if let Ok(_) = super::parse_name(0, &[]) {
       assert!(false);
     }
   }
 
   #[test]
   fn parse_name_with_count_zero() {
-    let result = super::parse_name(&[0]);
-    assert_eq!(Ok(vec![super::Label::Value(None)]), result);
+    let result = super::parse_name(0, &[0]);
+    assert_eq!(Ok(vec![super::Label::Value(0, None)]), result);
   }
 
   #[test]
   fn parse_name_with_overflowing_label_count() {
-    match super::parse_name(&[1]) {
+    match super::parse_name(0, &[1]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -1035,7 +1108,7 @@ mod test {
 
   #[test]
   fn parse_name_with_label_higher_than_63_count() {
-    match super::parse_name(&[64]) {
+    match super::parse_name(0, &[64]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -1045,7 +1118,7 @@ mod test {
 
   #[test]
   fn parse_name_with_premature_zero_in_label() {
-    match super::parse_name(&[4, 97, 98, 0, 99]) {
+    match super::parse_name(0, &[4, 97, 98, 0, 99]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -1055,11 +1128,11 @@ mod test {
 
   #[test]
   fn parse_name_with_label_text_abc() {
-    let result = super::parse_name(&[3, 97, 98, 99, 0]);
+    let result = super::parse_name(0, &[3, 97, 98, 99, 0]);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(Some("abc".to_owned())),
-        super::Label::Value(None)
+        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(4, None)
       ]),
       result
     );
@@ -1145,7 +1218,7 @@ mod test {
   #[test]
   fn query_size_when_empty() {
     let query = super::Query {
-      values: vec![super::Label::Value(None)],
+      values: vec![super::Label::Value(0, None)],
       q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
       q_class: super::QClass::Any,
@@ -1157,9 +1230,9 @@ mod test {
   fn query_size_with_two_values() {
     let query = super::Query {
       values: vec![
-        super::Label::Value(Some("abc".to_owned())),
-        super::Label::Value(Some("de".to_owned())),
-        super::Label::Value(None),
+        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(4, Some("de".to_owned())),
+        super::Label::Value(7, None),
       ],
       q_response_type: super::QuestionResponseType::QM,
       q_type: super::QType::Any,
@@ -1171,7 +1244,7 @@ mod test {
   #[test]
   fn parse_query_with_to_short_data() {
     let data = [0, 1, 0, 0];
-    let result = super::parse_query(&data);
+    let result = super::parse_query(0, &data);
     match result {
       Err(super::ParseError::QueryError(_)) => {}
       _ => assert!(false),
@@ -1181,10 +1254,10 @@ mod test {
   #[test]
   fn parse_query_without_values() {
     let data = [0, 0, 1, 0, 1];
-    let result = super::parse_query(&data);
+    let result = super::parse_query(0, &data);
     assert_eq!(
       Ok(super::Query {
-        values: vec![super::Label::Value(None)],
+        values: vec![super::Label::Value(0, None)],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
         q_class: super::QClass::Class(super::Class::IN)
@@ -1198,14 +1271,14 @@ mod test {
     let data = [
       3, 97, 98, 99, 2, 100, 101, 4, 102, 103, 104, 105, 0, 0, 1, 0, 1,
     ];
-    let result = super::parse_query(&data);
+    let result = super::parse_query(0, &data);
     assert_eq!(
       Ok(super::Query {
         values: vec![
-          super::Label::Value(Some("abc".to_owned())),
-          super::Label::Value(Some("de".to_owned())),
-          super::Label::Value(Some("fghi".to_owned())),
-          super::Label::Value(None)
+          super::Label::Value(0, Some("abc".to_owned())),
+          super::Label::Value(4, Some("de".to_owned())),
+          super::Label::Value(7, Some("fghi".to_owned())),
+          super::Label::Value(12, None)
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
@@ -1228,14 +1301,14 @@ mod test {
     let data = [data_piece_one, data_piece_two].concat();
 
     let header = super::parse_header(header_data);
-    let result = super::parse_queries(&header, &data);
+    let result = super::parse_queries(12, &header, &data);
     let expected = Ok(vec![
       super::Query {
         values: vec![
-          super::Label::Value(Some("abc".to_owned())),
-          super::Label::Value(Some("de".to_owned())),
-          super::Label::Value(Some("fghi".to_owned())),
-          super::Label::Value(None),
+          super::Label::Value(12, Some("abc".to_owned())),
+          super::Label::Value(16, Some("de".to_owned())),
+          super::Label::Value(19, Some("fghi".to_owned())),
+          super::Label::Value(24, None),
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
@@ -1243,10 +1316,10 @@ mod test {
       },
       super::Query {
         values: vec![
-          super::Label::Value(Some("ab".to_owned())),
-          super::Label::Value(Some("cde".to_owned())),
-          super::Label::Value(Some("fghi".to_owned())),
-          super::Label::Value(None),
+          super::Label::Value(29, Some("ab".to_owned())),
+          super::Label::Value(32, Some("cde".to_owned())),
+          super::Label::Value(36, Some("fghi".to_owned())),
+          super::Label::Value(41, None),
         ],
         q_response_type: super::QuestionResponseType::QM,
         q_type: super::QType::Type(super::Type::A),
@@ -1260,14 +1333,14 @@ mod test {
   #[test]
   fn parse_label_pointer() {
     let data = [193, 10];
-    let result = super::parse_label_pointer(&data);
-    assert_eq!(Ok(super::Label::Pointer(266)), result);
+    let result = super::parse_label_pointer(0, &data);
+    assert_eq!(Ok(super::Label::Pointer(0, 266)), result);
   }
 
   #[test]
   fn parse_label_pointer_and_fail() {
     let data = [193];
-    let result = super::parse_label_pointer(&data);
+    let result = super::parse_label_pointer(0, &data);
     match result {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
@@ -1279,41 +1352,44 @@ mod test {
   #[test]
   fn parse_label_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value(&data);
-    assert_eq!(Ok(super::Label::Value(Some("abcdefgh".to_owned()))), result);
+    let result = super::parse_label_value(0, &data);
+    assert_eq!(
+      Ok(super::Label::Value(0, Some("abcdefgh".to_owned()))),
+      result
+    );
   }
 
   #[test]
   fn parse_label_value_empty() {
     let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value(&data);
-    assert_eq!(Ok(super::Label::Value(None)), result);
+    let result = super::parse_label_value(0, &data);
+    assert_eq!(Ok(super::Label::Value(0, None)), result);
   }
 
   #[test]
   fn label_size_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value(&data);
+    let result = super::parse_label_value(0, &data);
     assert_eq!(Ok(9), result.map(|r| r.size()));
   }
 
   #[test]
   fn label_size_pointer() {
     let data = [192, 10];
-    let result = super::parse_label_pointer(&data);
+    let result = super::parse_label_pointer(0, &data);
     assert_eq!(Ok(2), result.map(|r| r.size()));
   }
 
   #[test]
   fn parse_query_with_value_values() {
     let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 0];
-    let result = super::parse_name(&data);
+    let result = super::parse_name(0, &data);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(Some("abc".to_owned())),
-        super::Label::Value(Some("de".to_owned())),
-        super::Label::Value(Some("f".to_owned())),
-        super::Label::Value(None),
+        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(4, Some("de".to_owned())),
+        super::Label::Value(7, Some("f".to_owned())),
+        super::Label::Value(9, None),
       ]),
       result
     );
@@ -1322,13 +1398,13 @@ mod test {
   #[test]
   fn parse_query_with_value_and_pointer_values() {
     let data = [3, 97, 98, 99, 2, 100, 101, 1, 102, 192, 10];
-    let result = super::parse_name(&data);
+    let result = super::parse_name(0, &data);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(Some("abc".to_owned())),
-        super::Label::Value(Some("de".to_owned())),
-        super::Label::Value(Some("f".to_owned())),
-        super::Label::Pointer(10),
+        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(4, Some("de".to_owned())),
+        super::Label::Value(7, Some("f".to_owned())),
+        super::Label::Pointer(9, 10),
       ]),
       result
     );
@@ -1402,8 +1478,8 @@ mod test {
       26,
       super::ResourceRecord {
         name: vec![
-          super::Label::Value(Some("abc".to_owned())),
-          super::Label::Value(None),
+          super::Label::Value(0, Some("abc".to_owned())),
+          super::Label::Value(4, None),
         ],
         resource_record_type: super::ResourceRecordType::Other(12),
         class: super::Class::IN,
@@ -1419,5 +1495,78 @@ mod test {
       let result = td.1.size();
       assert_eq!(td.0, result);
     }
+  }
+
+  #[test]
+  fn parse_test_pointer_logic() {
+    let data = [
+      0, 0, 0, 0, 0, 6, 0, 0, 0, 7, 0, 1, 4, 99, 111, 110, 102, 15, 95, 99, 111, 109, 112, 97, 110,
+      105, 111, 110, 45, 108, 105, 110, 107, 4, 95, 116, 99, 112, 5, 108, 111, 99, 97, 108, 0, 0,
+      255, 128, 1, 4, 99, 111, 110, 102, 14, 95, 109, 101, 100, 105, 97, 114, 101, 109, 111, 116,
+      101, 116, 118, 192, 33, 0, 255, 128, 1, 4, 99, 111, 110, 102, 8, 95, 97, 105, 114, 112, 108,
+      97, 121, 192, 33, 0, 255, 128, 1, 17, 57, 48, 68, 68, 53, 68, 66, 53, 57, 53, 54, 53, 64, 99,
+      111, 110, 102, 5, 95, 114, 97, 111, 112, 192, 33, 0, 255, 128, 1, 18, 55, 48, 45, 51, 53, 45,
+      54, 48, 45, 54, 51, 46, 49, 32, 99, 111, 110, 102, 12, 95, 115, 108, 101, 101, 112, 45, 112,
+      114, 111, 120, 121, 4, 95, 117, 100, 112, 192, 38, 0, 255, 128, 1, 4, 99, 111, 110, 102, 192,
+      38, 0, 255, 128, 1, 192, 12, 0, 33, 0, 1, 0, 0, 0, 120, 0, 8, 0, 0, 0, 0, 192, 0, 192, 168,
+      192, 49, 0, 33, 0, 1, 0, 0, 0, 120, 0, 8, 0, 0, 0, 0, 192, 1, 192, 168, 192, 75, 0, 33, 0, 1,
+      0, 0, 0, 120, 0, 8, 0, 0, 0, 0, 27, 88, 192, 168, 192, 95, 0, 33, 0, 1, 0, 0, 0, 120, 0, 8,
+      0, 0, 0, 0, 27, 88, 192, 168, 192, 125, 0, 33, 0, 1, 0, 0, 0, 120, 0, 8, 0, 0, 0, 0, 241,
+      224, 192, 168, 192, 168, 0, 28, 0, 1, 0, 0, 0, 120, 0, 16, 254, 128, 0, 0, 0, 0, 0, 0, 0,
+      174, 105, 16, 111, 52, 62, 9, 192, 168, 0, 1, 0, 1, 0, 0, 0, 120, 0, 4, 192, 168, 1, 136, 0,
+      0, 41, 5, 160, 0, 0, 17, 148, 0, 18, 0, 4, 0, 14, 0, 100, 144, 221, 93, 181, 149, 101, 144,
+      221, 93, 172, 40, 91,
+    ];
+
+    println!("data: {:?}\n", &data[89..]);
+
+    let result = super::parse(&data).unwrap();
+    println!("result: {:?}", result);
+  }
+
+  #[test]
+  fn read_until_termination_label_from_offset() {
+    let labels = vec![
+      super::Label::Value(0, Some("abc".to_owned())),
+      super::Label::Value(4, Some("def".to_owned())),
+      super::Label::Value(8, None),
+      super::Label::Value(12, Some("ghi".to_owned())),
+      super::Label::Value(16, None),
+      super::Label::Value(20, Some("jkl".to_owned())),
+      super::Label::Value(24, None),
+    ];
+
+    let result = super::read_until_termination_label_from_offset(labels, 12);
+    assert_eq!(
+      vec![
+        super::Label::Value(12, Some("ghi".to_owned())),
+        super::Label::Value(16, None)
+      ],
+      result
+    );
+  }
+
+  #[test]
+  fn resolve_name() {
+    let labels = vec![
+      super::Label::Value(0, Some("abc".to_owned())),
+      super::Label::Value(4, Some("def".to_owned())),
+      super::Label::Value(8, None),
+      super::Label::Value(12, Some("ghi".to_owned())),
+      super::Label::Value(16, None),
+      super::Label::Value(20, Some("jkl".to_owned())),
+      super::Label::Pointer(24, 0),
+    ];
+
+    let result = super::resolve_name(labels.clone(), labels[5..].to_vec());
+    assert_eq!(
+      vec![
+        super::Label::Value(20, Some("jkl".to_owned())),
+        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(4, Some("def".to_owned())),
+        super::Label::Value(8, None),
+      ],
+      result
+    );
   }
 }
