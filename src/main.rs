@@ -1,5 +1,8 @@
 mod header;
+mod message;
+mod query;
 mod rdns;
+mod resource_record;
 mod shared;
 use futures_util::stream::StreamExt;
 use mdns::{Record, RecordKind};
