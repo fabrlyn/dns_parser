@@ -1,4 +1,4 @@
-use crate::shared::{parse_class, parse_name, Class, Label, ParseError};
+use crate::shared::{parse_class, parse_name, parse_name_v2, Class, Label, LabelV2, ParseError};
 
 #[derive(Debug, PartialEq, Eq)]
 enum ResourceRecordType {
@@ -30,6 +30,33 @@ pub struct ResourceRecord {
   ttl: u32,
   resource_record_data_length: u16,
   resource_record_data: ResourceRecordData,
+}
+
+#[derive(Debug)]
+pub struct ResourceRecordV2<'a> {
+  name: Vec<LabelV2<'a>>,
+  resource_record_type: ResourceRecordType,
+  class: Class,
+  ttl: u32,
+  resource_record_data_length: u16,
+  resource_record_data: ResourceRecordData,
+}
+
+impl<'a> ResourceRecordV2<'a> {
+  pub fn size(&self) -> usize {
+    let type_length = 2;
+    let class_length = 2;
+    let ttl_length = 4;
+    let data_length_length = 2;
+    let name_size = self.name.iter().fold(0, |sum, l| sum + l.size());
+
+    self.resource_record_data.size()
+      + type_length
+      + class_length
+      + ttl_length
+      + data_length_length
+      + name_size
+  }
 }
 
 impl ResourceRecord {
@@ -108,6 +135,47 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
   }
 }
 
+fn parse_resource_record_v2<'a>(
+  start_offset: usize,
+  data: &'a [u8],
+) -> Result<ResourceRecordV2<'a>, ParseError> {
+  let name = parse_name_v2(start_offset, data)?;
+  let next_index = name.iter().fold(0, |sum, l| sum + l.size());
+
+  let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
+  let resource_record_type = parse_resource_record_type(resource_record_type_data);
+
+  let resource_record_class_data: [u8; 2] = [data[next_index + 2], data[next_index + 3]];
+  let resource_record_class = parse_class(resource_record_class_data);
+
+  let ttl_data: [u8; 4] = [
+    data[next_index + 4],
+    data[next_index + 5],
+    data[next_index + 6],
+    data[next_index + 7],
+  ];
+  let ttl = parse_ttl(ttl_data);
+
+  let resource_record_data_length_data: [u8; 2] = [data[next_index + 8], data[next_index + 9]];
+  let resource_record_data_length = parse_resource_data_length(resource_record_data_length_data);
+
+  let resource_record_data_data = &data[next_index + 10..];
+  let resource_record_data = parse_resource_record_data(
+    &resource_record_type,
+    &resource_record_class,
+    resource_record_data_length,
+    resource_record_data_data,
+  )?;
+
+  Ok(ResourceRecordV2 {
+    name,
+    resource_record_type,
+    class: resource_record_class,
+    ttl,
+    resource_record_data_length,
+    resource_record_data,
+  })
+}
 fn parse_resource_record(start_offset: u16, data: &[u8]) -> Result<ResourceRecord, ParseError> {
   let name = parse_name(start_offset, data)?;
   let next_index = name.iter().fold(0, |sum, l| sum + l.size());
@@ -159,6 +227,23 @@ pub fn parse_resource_records(
     let answer = parse_resource_record(current_offset, &data[previous_index..])?;
     previous_index += answer.size();
     current_offset += answer.size() as u16;
+    answers.push(answer);
+  }
+  Ok(answers)
+}
+
+pub fn parse_resource_records_v2<'a>(
+  start_offset: usize,
+  count: u16,
+  data: &'a [u8],
+) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
+  let mut answers = vec![];
+  let mut previous_index = 0;
+  let mut current_offset = start_offset;
+  for _ in 0..count {
+    let answer = parse_resource_record_v2(current_offset, &data[previous_index..])?;
+    previous_index += answer.size();
+    current_offset += answer.size();
     answers.push(answer);
   }
   Ok(answers)

@@ -11,9 +11,25 @@ const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
 const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LabelV2<'a> {
+  Value(u16, Option<&'a [u8]>),
+  Pointer(u16, u16),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Label {
   Value(u16, Option<String>),
   Pointer(u16, u16),
+}
+
+impl<'a> LabelV2<'a> {
+  pub fn size(&self) -> usize {
+    match self {
+      LabelV2::Value(_, Some(l)) => l.len() + 1,
+      LabelV2::Value(_, None) => 1,
+      LabelV2::Pointer(_, _) => 2,
+    }
+  }
 }
 
 impl Label {
@@ -131,6 +147,44 @@ fn resolve_name(all_labels: Vec<Label>, to_resolve: Vec<Label>) -> Vec<Label> {
     })
 }
 
+fn parse_label_value_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseError> {
+  let data = &data[offset..];
+
+  let data_len = data.len();
+  if data_len == 0 {
+    return Err(ParseError::QueryLabelError(
+      "Data is zero length".to_owned(),
+    ));
+  }
+  let count = data[0];
+  if count == 0 {
+    return Ok(LabelV2::Value(offset as u16, None));
+  }
+
+  if count > 63 {
+    return Err(ParseError::QueryLabelError(
+      "Count exceeds limit of 63".to_owned(),
+    ));
+  }
+
+  if (count as usize) > (data_len - 1) {
+    return Err(ParseError::QueryLabelError(
+      "Wrong label count. Count would overflow data".to_owned(),
+    ));
+  }
+
+  let label_data = &data[1..((count + 1) as usize)];
+  for &i in label_data {
+    if i == 0 {
+      return Err(ParseError::QueryLabelError(
+        "Zero encountered before end of label".to_owned(),
+      ));
+    }
+  }
+
+  Ok(LabelV2::Value(offset as u16, Some(label_data)))
+}
+
 fn parse_label_value(current_offset: u16, data: &[u8]) -> Result<Label, ParseError> {
   let data_len = data.len();
   if data_len == 0 {
@@ -178,6 +232,58 @@ fn parse_label_pointer(current_offset: u16, data: &[u8]) -> Result<Label, ParseE
   }
   let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
   Ok(Label::Pointer(current_offset, pointer_value))
+}
+
+fn parse_label_pointer_v2(offset: u16, data: &[u8]) -> Result<LabelV2, ParseError> {
+  if data.len() < 2 {
+    return Err(ParseError::QueryLabelError(
+      "Trying to parse pointer label, but data is not long enough".to_owned(),
+    ));
+  }
+  let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
+  Ok(LabelV2::Pointer(offset, pointer_value))
+}
+
+pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseError> {
+  let mut values = vec![];
+  let mut index = 0;
+  let mut current_offset = offset;
+
+  if data.len() == 0 {
+    return Err(ParseError::QueryLabelError(
+      "Failed to parse query values, zero length data".to_owned(),
+    ));
+  }
+
+  loop {
+    if data.len() <= index {
+      return Err(ParseError::QueryLabelError(
+        "Index going out of bounds when parsing query values".to_owned(),
+      ));
+    }
+
+    let data = &data[index..];
+    let label_type = LABEL_TYPE_MASK & data[0];
+
+    let label = match label_type {
+      LABEL_MASK_TYPE_POINTER => parse_label_pointer_v2(current_offset as u16, data),
+      LABEL_MASK_TYPE_VALUE => parse_label_value_v2(current_offset, data),
+      n => Err(ParseError::QueryLabelError(format!(
+        "Unknown label type: {}",
+        n
+      ))),
+    }?;
+    current_offset += label.size();
+    values.push(label.clone());
+
+    match label {
+      LabelV2::Pointer(_, _) => return Ok(values),
+      LabelV2::Value(_, None) => return Ok(values),
+      _ => {
+        index += label.size();
+      }
+    }
+  }
 }
 
 pub fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseError> {

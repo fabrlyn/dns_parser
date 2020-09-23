@@ -1,5 +1,7 @@
 use crate::header::Header;
-use crate::shared::{parse_class, parse_name, parse_type, Class, Label, ParseError, Type};
+use crate::shared::{
+  parse_class, parse_name, parse_name_v2, parse_type, Class, Label, LabelV2, ParseError, Type,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum QType {
@@ -24,10 +26,30 @@ pub struct Query {
   q_class: QClass,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct QueryV2<'a> {
+  values: Vec<LabelV2<'a>>,
+  q_response_type: QuestionResponseType,
+  q_type: QType,
+  q_class: QClass,
+}
+
 #[derive(PartialEq, Eq, Debug)]
 enum QuestionResponseType {
   QU,
   QM,
+}
+
+impl<'a> QueryV2<'a> {
+  pub fn size(&self) -> usize {
+    let q_type_size = 2;
+    let q_class_size = 2;
+
+    self
+      .values
+      .iter()
+      .fold(q_type_size + q_class_size, |sum, s| sum + s.size())
+  }
 }
 
 impl Query {
@@ -68,6 +90,32 @@ fn parse_query(current_offset: u16, data: &[u8]) -> Result<Query, ParseError> {
   })
 }
 
+fn parse_query_v2(offset: usize, data: &[u8]) -> Result<QueryV2, ParseError> {
+  let values = parse_name_v2(offset, data)?;
+  let offset = values.iter().fold(0, |sum, l| sum + l.size());
+
+  if data.len() < offset + 4 {
+    return Err(ParseError::QueryError(
+      "Data not long enough for query".to_owned(),
+    ));
+  }
+
+  let mut q_type_data: [u8; 2] = [0; 2];
+  q_type_data.copy_from_slice(&data[offset..offset + 2]);
+  let (q_response_type, q_type) = parse_q_type(q_type_data);
+
+  let mut q_class_data: [u8; 2] = [0; 2];
+  q_class_data.copy_from_slice(&data[offset + 2..offset + 4]);
+  let q_class = parse_q_class(q_class_data);
+
+  Ok(QueryV2 {
+    values,
+    q_response_type,
+    q_type,
+    q_class,
+  })
+}
+
 fn parse_q_class(data: [u8; 2]) -> QClass {
   let class = (data[0] as u16) << 8 | data[1] as u16;
   match class {
@@ -96,6 +144,23 @@ fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
       _ => QType::Type(parse_type(data)),
     },
   )
+}
+
+pub fn parse_queries_v2<'a>(
+  offset: usize,
+  header: &Header,
+  data: &'a [u8],
+) -> Result<Vec<QueryV2<'a>>, ParseError> {
+  let mut queries = vec![];
+  let mut previous_index = 0;
+  let mut current_offset = offset;
+  for _ in 0..header.qd_count {
+    let query = parse_query_v2(current_offset, &data[previous_index..])?;
+    previous_index += query.size();
+    current_offset += query.size();
+    queries.push(query);
+  }
+  Ok(queries)
 }
 
 pub fn parse_queries(
