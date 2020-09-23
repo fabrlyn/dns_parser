@@ -1,4 +1,9 @@
+mod header;
+mod message;
+mod query;
 mod rdns;
+mod resource_record;
+mod shared;
 use futures_util::stream::StreamExt;
 use mdns::{Record, RecordKind};
 use std::{net::IpAddr, time::Duration};
@@ -7,10 +12,10 @@ use std::{net::IpAddr, time::Duration};
 
 #[tokio::main]
 async fn main() {
-    discover_specific_service().await;
+    //discover_specific_service().await;
     //discover_all_services().await;
     //rdns::mdns();
-    //rdns::net_mdns();
+    rdns::net_mdns();
 }
 
 fn to_ip_addr(record: &Record) -> Option<IpAddr> {
