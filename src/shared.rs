@@ -11,12 +11,12 @@ const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
 const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Label {
-  Value(u16, Option<String>),
+pub enum Label<'a> {
+  Value(u16, Option<&'a [u8]>),
   Pointer(u16, u16),
 }
 
-impl Label {
+impl<'a> Label<'a> {
   pub fn size(&self) -> usize {
     match self {
       Label::Value(_, Some(l)) => l.len() + 1,
@@ -89,59 +89,18 @@ pub fn parse_type(data: [u8; 2]) -> Type {
     _ => Type::Invalid,
   }
 }
+fn parse_label_value(offset: usize, data: &[u8]) -> Result<Label, ParseError> {
+  let data = &data[offset..];
 
-fn read_until_termination_label_from_offset(labels: Vec<Label>, pointer_offset: u16) -> Vec<Label> {
-  let mut end_found = false;
-  labels
-    .into_iter()
-    .skip_while(|l| match l {
-      Label::Value(offset, _) => *offset != pointer_offset,
-      _ => true,
-    })
-    .take_while(|l| {
-      if end_found {
-        return false;
-      }
-
-      match l {
-        Label::Value(_, None) => {
-          end_found = true;
-          true
-        }
-        _ => true,
-      }
-    })
-    .collect()
-}
-
-fn resolve_name(all_labels: Vec<Label>, to_resolve: Vec<Label>) -> Vec<Label> {
-  to_resolve
-    .iter()
-    .fold(vec![], |mut labels, label| match label {
-      Label::Pointer(_, pointer) => {
-        read_until_termination_label_from_offset(all_labels.clone(), *pointer)
-          .into_iter()
-          .for_each(|l| labels.push(l));
-        labels
-      }
-      label => {
-        labels.push(label.clone());
-        labels
-      }
-    })
-}
-
-fn parse_label_value(current_offset: u16, data: &[u8]) -> Result<Label, ParseError> {
   let data_len = data.len();
   if data_len == 0 {
     return Err(ParseError::QueryLabelError(
       "Data is zero length".to_owned(),
     ));
   }
-
   let count = data[0];
   if count == 0 {
-    return Ok(Label::Value(current_offset, None));
+    return Ok(Label::Value(offset as u16, None));
   }
 
   if count > 63 {
@@ -165,25 +124,13 @@ fn parse_label_value(current_offset: u16, data: &[u8]) -> Result<Label, ParseErr
     }
   }
 
-  std::str::from_utf8(label_data)
-    .map(|s| Label::Value(current_offset, Some(s.to_owned())))
-    .map_err(|e| ParseError::QueryLabelError(e.to_string()))
+  Ok(Label::Value(offset as u16, Some(label_data)))
 }
 
-fn parse_label_pointer(current_offset: u16, data: &[u8]) -> Result<Label, ParseError> {
-  if data.len() < 2 {
-    return Err(ParseError::QueryLabelError(
-      "Trying to parse pointer label, but data is not long enough".to_owned(),
-    ));
-  }
-  let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
-  Ok(Label::Pointer(current_offset, pointer_value))
-}
-
-pub fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseError> {
+pub fn parse_name(offset: usize, data: &[u8]) -> Result<Vec<Label>, ParseError> {
   let mut values = vec![];
   let mut index = 0;
-  let mut current_offset = start_offset;
+  let mut current_offset = offset;
 
   if data.len() == 0 {
     return Err(ParseError::QueryLabelError(
@@ -198,8 +145,7 @@ pub fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseErr
       ));
     }
 
-    let data = &data[index..];
-    let label_type = LABEL_TYPE_MASK & data[0];
+    let label_type = LABEL_TYPE_MASK & data[current_offset];
 
     let label = match label_type {
       LABEL_MASK_TYPE_POINTER => parse_label_pointer(current_offset, data),
@@ -209,7 +155,7 @@ pub fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseErr
         n
       ))),
     }?;
-    current_offset += label.size() as u16;
+    current_offset += label.size();
     values.push(label.clone());
 
     match label {
@@ -220,6 +166,17 @@ pub fn parse_name(start_offset: u16, data: &[u8]) -> Result<Vec<Label>, ParseErr
       }
     }
   }
+}
+
+fn parse_label_pointer(offset: usize, data: &[u8]) -> Result<Label, ParseError> {
+  if data.len() < 2 {
+    return Err(ParseError::QueryLabelError(
+      "Trying to parse pointer label, but data is not long enough".to_owned(),
+    ));
+  }
+  let pointer_value =
+    ((!LABEL_MASK_TYPE_POINTER & data[offset]) as u16) << 8 | data[offset + 1] as u16;
+  Ok(Label::Pointer(offset as u16, pointer_value))
 }
 
 mod test {
@@ -301,7 +258,7 @@ mod test {
     let result = super::parse_name(0, &[3, 97, 98, 99, 0]);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(0, Some("abc".to_owned())),
+        super::Label::Value(0, Some(&[97, 98, 99])),
         super::Label::Value(4, None)
       ]),
       result
@@ -349,7 +306,10 @@ mod test {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
     let result = super::parse_label_value(0, &data);
     assert_eq!(
-      Ok(super::Label::Value(0, Some("abcdefgh".to_owned()))),
+      Ok(super::Label::Value(
+        0,
+        Some(&[97, 98, 99, 100, 101, 102, 103, 104])
+      )),
       result
     );
   }
@@ -376,47 +336,15 @@ mod test {
   }
 
   #[test]
-  fn read_until_termination_label_from_offset() {
-    let labels = vec![
-      super::Label::Value(0, Some("abc".to_owned())),
-      super::Label::Value(4, Some("def".to_owned())),
-      super::Label::Value(8, None),
-      super::Label::Value(12, Some("ghi".to_owned())),
-      super::Label::Value(16, None),
-      super::Label::Value(20, Some("jkl".to_owned())),
-      super::Label::Value(24, None),
-    ];
-
-    let result = super::read_until_termination_label_from_offset(labels, 12);
+  fn parse_name() {
+    let data = &[3, 97, 98, 99, 2, 97, 98, 0, 4, 97, 98, 99, 100, 1, 97, 0];
+    let result = super::parse_name(0, data);
     assert_eq!(
-      vec![
-        super::Label::Value(12, Some("ghi".to_owned())),
-        super::Label::Value(16, None)
-      ],
-      result
-    );
-  }
-
-  #[test]
-  fn resolve_name() {
-    let labels = vec![
-      super::Label::Value(0, Some("abc".to_owned())),
-      super::Label::Value(4, Some("def".to_owned())),
-      super::Label::Value(8, None),
-      super::Label::Value(12, Some("ghi".to_owned())),
-      super::Label::Value(16, None),
-      super::Label::Value(20, Some("jkl".to_owned())),
-      super::Label::Pointer(24, 0),
-    ];
-
-    let result = super::resolve_name(labels.clone(), labels[5..].to_vec());
-    assert_eq!(
-      vec![
-        super::Label::Value(20, Some("jkl".to_owned())),
-        super::Label::Value(0, Some("abc".to_owned())),
-        super::Label::Value(4, Some("def".to_owned())),
-        super::Label::Value(8, None),
-      ],
+      Ok(vec![
+        super::Label::Value(0, Some(&[97, 98, 99])),
+        super::Label::Value(4, Some(&[97, 98])),
+        super::Label::Value(7, None)
+      ]),
       result
     );
   }

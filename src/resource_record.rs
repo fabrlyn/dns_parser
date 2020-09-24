@@ -23,8 +23,8 @@ impl ResourceRecordData {
 }
 
 #[derive(Debug)]
-pub struct ResourceRecord {
-  name: Vec<Label>,
+pub struct ResourceRecord<'a> {
+  name: Vec<Label<'a>>,
   resource_record_type: ResourceRecordType,
   class: Class,
   ttl: u32,
@@ -32,7 +32,7 @@ pub struct ResourceRecord {
   resource_record_data: ResourceRecordData,
 }
 
-impl ResourceRecord {
+impl<'a> ResourceRecord<'a> {
   pub fn size(&self) -> usize {
     let type_length = 2;
     let class_length = 2;
@@ -108,9 +108,12 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
   }
 }
 
-fn parse_resource_record(start_offset: u16, data: &[u8]) -> Result<ResourceRecord, ParseError> {
-  let name = parse_name(start_offset, data)?;
-  let next_index = name.iter().fold(0, |sum, l| sum + l.size());
+fn parse_resource_record<'a>(
+  offset: usize,
+  data: &'a [u8],
+) -> Result<ResourceRecord<'a>, ParseError> {
+  let name = parse_name(offset, data)?;
+  let next_index = name.iter().fold(offset, |sum, l| sum + l.size());
 
   let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
   let resource_record_type = parse_resource_record_type(resource_record_type_data);
@@ -147,18 +150,16 @@ fn parse_resource_record(start_offset: u16, data: &[u8]) -> Result<ResourceRecor
   })
 }
 
-pub fn parse_resource_records(
-  start_offset: u16,
+pub fn parse_resource_records<'a>(
+  start_offset: usize,
   count: u16,
-  data: &[u8],
-) -> Result<Vec<ResourceRecord>, ParseError> {
+  data: &'a [u8],
+) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
   let mut answers = vec![];
-  let mut previous_index = 0;
   let mut current_offset = start_offset;
   for _ in 0..count {
-    let answer = parse_resource_record(current_offset, &data[previous_index..])?;
-    previous_index += answer.size();
-    current_offset += answer.size() as u16;
+    let answer = parse_resource_record(current_offset, data)?;
+    current_offset += answer.size();
     answers.push(answer);
   }
   Ok(answers)
@@ -207,31 +208,6 @@ mod test {
         super::ResourceRecordData::A(std::net::Ipv4Addr::new(192, 168, 0, 158)),
       ),
     ];
-
-    for td in &data {
-      let result = td.1.size();
-      assert_eq!(td.0, result);
-    }
-  }
-
-  #[test]
-  fn resource_record_size() {
-    let data = [(
-      26,
-      super::ResourceRecord {
-        name: vec![
-          super::Label::Value(0, Some("abc".to_owned())),
-          super::Label::Value(4, None),
-        ],
-        resource_record_type: super::ResourceRecordType::Other(12),
-        class: super::Class::IN,
-        ttl: 4500,
-        resource_record_data_length: 11,
-        resource_record_data: super::ResourceRecordData::Other(vec![
-          1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-        ]),
-      },
-    )];
 
     for td in &data {
       let result = td.1.size();
