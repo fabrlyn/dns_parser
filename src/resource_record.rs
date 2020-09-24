@@ -1,4 +1,4 @@
-use crate::shared::{parse_class, parse_name_v2, Class, LabelV2, ParseError};
+use crate::shared::{parse_class, parse_name, Class, Label, ParseError};
 
 #[derive(Debug, PartialEq, Eq)]
 enum ResourceRecordType {
@@ -23,8 +23,8 @@ impl ResourceRecordData {
 }
 
 #[derive(Debug)]
-pub struct ResourceRecordV2<'a> {
-  name: Vec<LabelV2<'a>>,
+pub struct ResourceRecord<'a> {
+  name: Vec<Label<'a>>,
   resource_record_type: ResourceRecordType,
   class: Class,
   ttl: u32,
@@ -32,7 +32,7 @@ pub struct ResourceRecordV2<'a> {
   resource_record_data: ResourceRecordData,
 }
 
-impl<'a> ResourceRecordV2<'a> {
+impl<'a> ResourceRecord<'a> {
   pub fn size(&self) -> usize {
     let type_length = 2;
     let class_length = 2;
@@ -108,11 +108,11 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
   }
 }
 
-fn parse_resource_record_v2<'a>(
+fn parse_resource_record<'a>(
   offset: usize,
   data: &'a [u8],
-) -> Result<ResourceRecordV2<'a>, ParseError> {
-  let name = parse_name_v2(offset, data)?;
+) -> Result<ResourceRecord<'a>, ParseError> {
+  let name = parse_name(offset, data)?;
   let next_index = name.iter().fold(offset, |sum, l| sum + l.size());
 
   let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
@@ -140,7 +140,7 @@ fn parse_resource_record_v2<'a>(
     resource_record_data_data,
   )?;
 
-  Ok(ResourceRecordV2 {
+  Ok(ResourceRecord {
     name,
     resource_record_type,
     class: resource_record_class,
@@ -150,15 +150,15 @@ fn parse_resource_record_v2<'a>(
   })
 }
 
-pub fn parse_resource_records_v2<'a>(
+pub fn parse_resource_records<'a>(
   start_offset: usize,
   count: u16,
   data: &'a [u8],
-) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
+) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
   let mut answers = vec![];
   let mut current_offset = start_offset;
   for _ in 0..count {
-    let answer = parse_resource_record_v2(current_offset, data)?;
+    let answer = parse_resource_record(current_offset, data)?;
     current_offset += answer.size();
     answers.push(answer);
   }

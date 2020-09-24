@@ -1,5 +1,5 @@
 use crate::header::Header;
-use crate::shared::{parse_class, parse_name_v2, parse_type, Class, LabelV2, ParseError, Type};
+use crate::shared::{parse_class, parse_name, parse_type, Class, Label, ParseError, Type};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum QType {
@@ -17,8 +17,8 @@ enum QClass {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct QueryV2<'a> {
-  values: Vec<LabelV2<'a>>,
+pub struct Query<'a> {
+  values: Vec<Label<'a>>,
   q_response_type: QuestionResponseType,
   q_type: QType,
   q_class: QClass,
@@ -30,7 +30,7 @@ enum QuestionResponseType {
   QM,
 }
 
-impl<'a> QueryV2<'a> {
+impl<'a> Query<'a> {
   pub fn size(&self) -> usize {
     let q_type_size = 2;
     let q_class_size = 2;
@@ -42,8 +42,8 @@ impl<'a> QueryV2<'a> {
   }
 }
 
-fn parse_query_v2(offset: usize, data: &[u8]) -> Result<QueryV2, ParseError> {
-  let values = parse_name_v2(offset, data)?;
+fn parse_query(offset: usize, data: &[u8]) -> Result<Query, ParseError> {
+  let values = parse_name(offset, data)?;
   let offset = values.iter().fold(0, |sum, l| sum + l.size());
 
   if data.len() < offset + 4 {
@@ -60,7 +60,7 @@ fn parse_query_v2(offset: usize, data: &[u8]) -> Result<QueryV2, ParseError> {
   q_class_data.copy_from_slice(&data[offset + 2..offset + 4]);
   let q_class = parse_q_class(q_class_data);
 
-  Ok(QueryV2 {
+  Ok(Query {
     values,
     q_response_type,
     q_type,
@@ -98,15 +98,15 @@ fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
   )
 }
 
-pub fn parse_queries_v2<'a>(
+pub fn parse_queries<'a>(
   offset: usize,
   header: &Header,
   data: &'a [u8],
-) -> Result<Vec<QueryV2<'a>>, ParseError> {
+) -> Result<Vec<Query<'a>>, ParseError> {
   let mut queries = vec![];
   let mut current_offset = offset;
   for _ in 0..header.qd_count {
-    let query = parse_query_v2(current_offset, data)?;
+    let query = parse_query(current_offset, data)?;
     current_offset += query.size();
     queries.push(query);
   }

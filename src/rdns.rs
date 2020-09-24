@@ -1,4 +1,4 @@
-use crate::message::parse_v2;
+use crate::message::parse;
 use net2::unix::UnixUdpBuilderExt;
 use std::net::Ipv4Addr;
 
@@ -24,7 +24,7 @@ pub fn net_mdns() {
   let mut buf = [0u8; 65535];
   loop {
     let (amt, _src) = socket.recv_from(&mut buf).unwrap();
-    let header = parse_v2(&buf[0..amt]);
+    let header = parse(&buf[0..amt]);
     match header {
       Ok(message) => {
         println!("header: {:?}", message.header);

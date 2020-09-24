@@ -11,17 +11,17 @@ const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
 const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LabelV2<'a> {
+pub enum Label<'a> {
   Value(u16, Option<&'a [u8]>),
   Pointer(u16, u16),
 }
 
-impl<'a> LabelV2<'a> {
+impl<'a> Label<'a> {
   pub fn size(&self) -> usize {
     match self {
-      LabelV2::Value(_, Some(l)) => l.len() + 1,
-      LabelV2::Value(_, None) => 1,
-      LabelV2::Pointer(_, _) => 2,
+      Label::Value(_, Some(l)) => l.len() + 1,
+      Label::Value(_, None) => 1,
+      Label::Pointer(_, _) => 2,
     }
   }
 }
@@ -89,7 +89,7 @@ pub fn parse_type(data: [u8; 2]) -> Type {
     _ => Type::Invalid,
   }
 }
-fn parse_label_value_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseError> {
+fn parse_label_value(offset: usize, data: &[u8]) -> Result<Label, ParseError> {
   let data = &data[offset..];
 
   let data_len = data.len();
@@ -100,7 +100,7 @@ fn parse_label_value_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseErro
   }
   let count = data[0];
   if count == 0 {
-    return Ok(LabelV2::Value(offset as u16, None));
+    return Ok(Label::Value(offset as u16, None));
   }
 
   if count > 63 {
@@ -124,10 +124,10 @@ fn parse_label_value_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseErro
     }
   }
 
-  Ok(LabelV2::Value(offset as u16, Some(label_data)))
+  Ok(Label::Value(offset as u16, Some(label_data)))
 }
 
-pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseError> {
+pub fn parse_name(offset: usize, data: &[u8]) -> Result<Vec<Label>, ParseError> {
   let mut values = vec![];
   let mut index = 0;
   let mut current_offset = offset;
@@ -149,8 +149,8 @@ pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseEr
     let label_type = LABEL_TYPE_MASK & data[current_offset];
 
     let label = match label_type {
-      LABEL_MASK_TYPE_POINTER => parse_label_pointer_v2(current_offset, data),
-      LABEL_MASK_TYPE_VALUE => parse_label_value_v2(current_offset, data),
+      LABEL_MASK_TYPE_POINTER => parse_label_pointer(current_offset, data),
+      LABEL_MASK_TYPE_VALUE => parse_label_value(current_offset, data),
       n => Err(ParseError::QueryLabelError(format!(
         "Unknown label type: {}",
         n
@@ -160,8 +160,8 @@ pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseEr
     values.push(label.clone());
 
     match label {
-      LabelV2::Pointer(_, _) => return Ok(values),
-      LabelV2::Value(_, None) => return Ok(values),
+      Label::Pointer(_, _) => return Ok(values),
+      Label::Value(_, None) => return Ok(values),
       _ => {
         index += label.size();
       }
@@ -169,7 +169,7 @@ pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseEr
   }
 }
 
-fn parse_label_pointer_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseError> {
+fn parse_label_pointer(offset: usize, data: &[u8]) -> Result<Label, ParseError> {
   if data.len() < 2 {
     return Err(ParseError::QueryLabelError(
       "Trying to parse pointer label, but data is not long enough".to_owned(),
@@ -177,7 +177,7 @@ fn parse_label_pointer_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseEr
   }
   let pointer_value =
     ((!LABEL_MASK_TYPE_POINTER & data[offset]) as u16) << 8 | data[offset + 1] as u16;
-  Ok(LabelV2::Pointer(offset as u16, pointer_value))
+  Ok(Label::Pointer(offset as u16, pointer_value))
 }
 
 mod test {
@@ -212,21 +212,21 @@ mod test {
   }
 
   #[test]
-  fn parse_name_label_with_zero_length_v2() {
-    if let Ok(_) = super::parse_name_v2(0, &[]) {
+  fn parse_name_label_with_zero_length() {
+    if let Ok(_) = super::parse_name(0, &[]) {
       assert!(false);
     }
   }
 
   #[test]
-  fn parse_name_with_count_zero_v2() {
-    let result = super::parse_name_v2(0, &[0]);
-    assert_eq!(Ok(vec![super::LabelV2::Value(0, None)]), result);
+  fn parse_name_with_count_zero() {
+    let result = super::parse_name(0, &[0]);
+    assert_eq!(Ok(vec![super::Label::Value(0, None)]), result);
   }
 
   #[test]
-  fn parse_name_with_overflowing_label_count_v2() {
-    match super::parse_name_v2(0, &[1]) {
+  fn parse_name_with_overflowing_label_count() {
+    match super::parse_name(0, &[1]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -235,8 +235,8 @@ mod test {
   }
 
   #[test]
-  fn parse_name_with_label_higher_than_63_count_v2() {
-    match super::parse_name_v2(0, &[64]) {
+  fn parse_name_with_label_higher_than_63_count() {
+    match super::parse_name(0, &[64]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -245,8 +245,8 @@ mod test {
   }
 
   #[test]
-  fn parse_name_with_premature_zero_in_label_v2() {
-    match super::parse_name_v2(0, &[4, 97, 98, 0, 99]) {
+  fn parse_name_with_premature_zero_in_label() {
+    match super::parse_name(0, &[4, 97, 98, 0, 99]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -255,12 +255,12 @@ mod test {
   }
 
   #[test]
-  fn parse_name_with_label_text_abc_v2() {
-    let result = super::parse_name_v2(0, &[3, 97, 98, 99, 0]);
+  fn parse_name_with_label_text_abc() {
+    let result = super::parse_name(0, &[3, 97, 98, 99, 0]);
     assert_eq!(
       Ok(vec![
-        super::LabelV2::Value(0, Some(&[97, 98, 99])),
-        super::LabelV2::Value(4, None)
+        super::Label::Value(0, Some(&[97, 98, 99])),
+        super::Label::Value(4, None)
       ]),
       result
     );
@@ -284,16 +284,16 @@ mod test {
   }
 
   #[test]
-  fn parse_label_pointer_v2() {
+  fn parse_label_pointer() {
     let data = [193, 10];
-    let result = super::parse_label_pointer_v2(0, &data);
-    assert_eq!(Ok(super::LabelV2::Pointer(0, 266)), result);
+    let result = super::parse_label_pointer(0, &data);
+    assert_eq!(Ok(super::Label::Pointer(0, 266)), result);
   }
 
   #[test]
-  fn parse_label_pointer_and_fail_v2() {
+  fn parse_label_pointer_and_fail() {
     let data = [193];
-    let result = super::parse_label_pointer_v2(0, &data);
+    let result = super::parse_label_pointer(0, &data);
     match result {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
@@ -303,11 +303,11 @@ mod test {
   }
 
   #[test]
-  fn parse_label_value_v2() {
+  fn parse_label_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value_v2(0, &data);
+    let result = super::parse_label_value(0, &data);
     assert_eq!(
-      Ok(super::LabelV2::Value(
+      Ok(super::Label::Value(
         0,
         Some(&[97, 98, 99, 100, 101, 102, 103, 104])
       )),
@@ -316,35 +316,35 @@ mod test {
   }
 
   #[test]
-  fn parse_label_value_empty_v2() {
+  fn parse_label_value_empty() {
     let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value_v2(0, &data);
-    assert_eq!(Ok(super::LabelV2::Value(0, None)), result);
+    let result = super::parse_label_value(0, &data);
+    assert_eq!(Ok(super::Label::Value(0, None)), result);
   }
 
   #[test]
-  fn label_size_value_v2() {
+  fn label_size_value() {
     let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
-    let result = super::parse_label_value_v2(0, &data);
+    let result = super::parse_label_value(0, &data);
     assert_eq!(Ok(9), result.map(|r| r.size()));
   }
 
   #[test]
-  fn label_size_pointer_v2() {
+  fn label_size_pointer() {
     let data = [192, 10];
-    let result = super::parse_label_pointer_v2(0, &data);
+    let result = super::parse_label_pointer(0, &data);
     assert_eq!(Ok(2), result.map(|r| r.size()));
   }
 
   #[test]
-  fn parse_name_v2() {
+  fn parse_name() {
     let data = &[3, 97, 98, 99, 2, 97, 98, 0, 4, 97, 98, 99, 100, 1, 97, 0];
-    let result = super::parse_name_v2(0, data);
+    let result = super::parse_name(0, data);
     assert_eq!(
       Ok(vec![
-        super::LabelV2::Value(0, Some(&[97, 98, 99])),
-        super::LabelV2::Value(4, Some(&[97, 98])),
-        super::LabelV2::Value(7, None)
+        super::Label::Value(0, Some(&[97, 98, 99])),
+        super::Label::Value(4, Some(&[97, 98])),
+        super::Label::Value(7, None)
       ]),
       result
     );
