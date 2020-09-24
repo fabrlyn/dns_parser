@@ -145,7 +145,6 @@ pub fn parse_name(offset: usize, data: &[u8]) -> Result<Vec<Label>, ParseError> 
       ));
     }
 
-    //let data = &data[index..];
     let label_type = LABEL_TYPE_MASK & data[current_offset];
 
     let label = match label_type {
