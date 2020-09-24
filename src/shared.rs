@@ -234,14 +234,15 @@ fn parse_label_pointer(current_offset: u16, data: &[u8]) -> Result<Label, ParseE
   Ok(Label::Pointer(current_offset, pointer_value))
 }
 
-fn parse_label_pointer_v2(offset: u16, data: &[u8]) -> Result<LabelV2, ParseError> {
+fn parse_label_pointer_v2(offset: usize, data: &[u8]) -> Result<LabelV2, ParseError> {
   if data.len() < 2 {
     return Err(ParseError::QueryLabelError(
       "Trying to parse pointer label, but data is not long enough".to_owned(),
     ));
   }
-  let pointer_value = ((!LABEL_MASK_TYPE_POINTER & data[0]) as u16) << 8 | data[1] as u16;
-  Ok(LabelV2::Pointer(offset, pointer_value))
+  let pointer_value =
+    ((!LABEL_MASK_TYPE_POINTER & data[offset]) as u16) << 8 | data[offset + 1] as u16;
+  Ok(LabelV2::Pointer(offset as u16, pointer_value))
 }
 
 pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseError> {
@@ -266,7 +267,7 @@ pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseEr
     let label_type = LABEL_TYPE_MASK & data[current_offset];
 
     let label = match label_type {
-      LABEL_MASK_TYPE_POINTER => parse_label_pointer_v2(current_offset as u16, data),
+      LABEL_MASK_TYPE_POINTER => parse_label_pointer_v2(current_offset, data),
       LABEL_MASK_TYPE_VALUE => parse_label_value_v2(current_offset, data),
       n => Err(ParseError::QueryLabelError(format!(
         "Unknown label type: {}",
