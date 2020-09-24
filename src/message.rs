@@ -94,27 +94,27 @@ fn parse_answers(
 }
 
 fn parse_additional_resource_records_v2<'a>(
-  start_offset: usize,
+  offset: usize,
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
-  parse_resource_records_v2(start_offset, header.ar_count, data)
+  parse_resource_records_v2(offset, header.ar_count, data)
 }
 
 fn parse_name_servers_v2<'a>(
-  start_offset: usize,
+  offset: usize,
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
-  parse_resource_records_v2(start_offset, header.ns_count, data)
+  parse_resource_records_v2(offset, header.ns_count, data)
 }
 
 fn parse_answers_v2<'a>(
-  start_offset: usize,
+  offset: usize,
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
-  parse_resource_records_v2(start_offset, header.an_count, data)
+  parse_resource_records_v2(offset, header.an_count, data)
 }
 
 pub fn parse_v2(data: &[u8]) -> Result<MessageV2, ParseError> {
@@ -125,20 +125,16 @@ pub fn parse_v2(data: &[u8]) -> Result<MessageV2, ParseError> {
   let queries = parse_queries_v2(offset, &header, data)?;
   let queries_length = queries.iter().fold(offset, |sum, q| sum + q.size());
 
-  let answers = parse_answers_v2(queries_length, &header, &data[queries_length as usize..])?;
+  let answers = parse_answers_v2(queries_length, &header, data)?;
   let answers_length = answers.iter().fold(queries_length, |sum, a| sum + a.size());
 
-  let name_servers =
-    parse_name_servers_v2(answers_length, &header, &data[answers_length as usize..])?;
+  let name_servers = parse_name_servers_v2(answers_length, &header, data)?;
   let name_server_resources_length = name_servers
     .iter()
     .fold(answers_length, |sum, r| sum + r.size());
 
-  let additional_records = parse_additional_resource_records_v2(
-    name_server_resources_length,
-    &header,
-    &data[name_server_resources_length as usize..],
-  )?;
+  let additional_records =
+    parse_additional_resource_records_v2(name_server_resources_length, &header, data)?;
 
   Ok(MessageV2 {
     header,

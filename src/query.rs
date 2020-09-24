@@ -152,11 +152,9 @@ pub fn parse_queries_v2<'a>(
   data: &'a [u8],
 ) -> Result<Vec<QueryV2<'a>>, ParseError> {
   let mut queries = vec![];
-  let mut previous_index = 0;
   let mut current_offset = offset;
   for _ in 0..header.qd_count {
-    let query = parse_query_v2(current_offset, &data[previous_index..])?;
-    previous_index += query.size();
+    let query = parse_query_v2(current_offset, data)?;
     current_offset += query.size();
     queries.push(query);
   }

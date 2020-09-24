@@ -136,11 +136,11 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
 }
 
 fn parse_resource_record_v2<'a>(
-  start_offset: usize,
+  offset: usize,
   data: &'a [u8],
 ) -> Result<ResourceRecordV2<'a>, ParseError> {
-  let name = parse_name_v2(start_offset, data)?;
-  let next_index = name.iter().fold(0, |sum, l| sum + l.size());
+  let name = parse_name_v2(offset, data)?;
+  let next_index = name.iter().fold(offset, |sum, l| sum + l.size());
 
   let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
   let resource_record_type = parse_resource_record_type(resource_record_type_data);
@@ -176,6 +176,7 @@ fn parse_resource_record_v2<'a>(
     resource_record_data,
   })
 }
+
 fn parse_resource_record(start_offset: u16, data: &[u8]) -> Result<ResourceRecord, ParseError> {
   let name = parse_name(start_offset, data)?;
   let next_index = name.iter().fold(0, |sum, l| sum + l.size());
@@ -238,11 +239,9 @@ pub fn parse_resource_records_v2<'a>(
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecordV2<'a>>, ParseError> {
   let mut answers = vec![];
-  let mut previous_index = 0;
   let mut current_offset = start_offset;
   for _ in 0..count {
-    let answer = parse_resource_record_v2(current_offset, &data[previous_index..])?;
-    previous_index += answer.size();
+    let answer = parse_resource_record_v2(current_offset, data)?;
     current_offset += answer.size();
     answers.push(answer);
   }

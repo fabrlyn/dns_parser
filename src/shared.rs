@@ -262,8 +262,8 @@ pub fn parse_name_v2(offset: usize, data: &[u8]) -> Result<Vec<LabelV2>, ParseEr
       ));
     }
 
-    let data = &data[index..];
-    let label_type = LABEL_TYPE_MASK & data[0];
+    //let data = &data[index..];
+    let label_type = LABEL_TYPE_MASK & data[current_offset];
 
     let label = match label_type {
       LABEL_MASK_TYPE_POINTER => parse_label_pointer_v2(current_offset as u16, data),
@@ -360,10 +360,23 @@ mod test {
   }
 
   #[test]
+  fn parse_name_label_with_zero_length_v2() {
+    if let Ok(_) = super::parse_name_v2(0, &[]) {
+      assert!(false);
+    }
+  }
+
+  #[test]
   fn parse_name_label_with_zero_length() {
     if let Ok(_) = super::parse_name(0, &[]) {
       assert!(false);
     }
+  }
+
+  #[test]
+  fn parse_name_with_count_zero_v2() {
+    let result = super::parse_name_v2(0, &[0]);
+    assert_eq!(Ok(vec![super::LabelV2::Value(0, None)]), result);
   }
 
   #[test]
@@ -373,8 +386,28 @@ mod test {
   }
 
   #[test]
+  fn parse_name_with_overflowing_label_count_v2() {
+    match super::parse_name_v2(0, &[1]) {
+      Err(super::ParseError::QueryLabelError(_)) => {}
+      _ => {
+        assert!(false);
+      }
+    }
+  }
+
+  #[test]
   fn parse_name_with_overflowing_label_count() {
     match super::parse_name(0, &[1]) {
+      Err(super::ParseError::QueryLabelError(_)) => {}
+      _ => {
+        assert!(false);
+      }
+    }
+  }
+
+  #[test]
+  fn parse_name_with_label_higher_than_63_count_v2() {
+    match super::parse_name_v2(0, &[64]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
       _ => {
         assert!(false);
@@ -393,6 +426,16 @@ mod test {
   }
 
   #[test]
+  fn parse_name_with_premature_zero_in_label_v2() {
+    match super::parse_name_v2(0, &[4, 97, 98, 0, 99]) {
+      Err(super::ParseError::QueryLabelError(_)) => {}
+      _ => {
+        assert!(false);
+      }
+    }
+  }
+
+  #[test]
   fn parse_name_with_premature_zero_in_label() {
     match super::parse_name(0, &[4, 97, 98, 0, 99]) {
       Err(super::ParseError::QueryLabelError(_)) => {}
@@ -400,6 +443,18 @@ mod test {
         assert!(false);
       }
     }
+  }
+
+  #[test]
+  fn parse_name_with_label_text_abc_v2() {
+    let result = super::parse_name_v2(0, &[3, 97, 98, 99, 0]);
+    assert_eq!(
+      Ok(vec![
+        super::LabelV2::Value(0, Some(&[97, 98, 99])),
+        super::LabelV2::Value(4, None)
+      ]),
+      result
+    );
   }
 
   #[test]
@@ -439,6 +494,25 @@ mod test {
   }
 
   #[test]
+  fn parse_label_pointer_v2() {
+    let data = [193, 10];
+    let result = super::parse_label_pointer_v2(0, &data);
+    assert_eq!(Ok(super::LabelV2::Pointer(0, 266)), result);
+  }
+
+  #[test]
+  fn parse_label_pointer_and_fail_v2() {
+    let data = [193];
+    let result = super::parse_label_pointer_v2(0, &data);
+    match result {
+      Err(super::ParseError::QueryLabelError(_)) => {}
+      _ => {
+        assert!(false);
+      }
+    }
+  }
+
+  #[test]
   fn parse_label_pointer_and_fail() {
     let data = [193];
     let result = super::parse_label_pointer(0, &data);
@@ -461,10 +535,30 @@ mod test {
   }
 
   #[test]
+  fn parse_label_value_v2() {
+    let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_value_v2(0, &data);
+    assert_eq!(
+      Ok(super::LabelV2::Value(
+        0,
+        Some(&[97, 98, 99, 100, 101, 102, 103, 104])
+      )),
+      result
+    );
+  }
+
+  #[test]
   fn parse_label_value_empty() {
     let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
     let result = super::parse_label_value(0, &data);
     assert_eq!(Ok(super::Label::Value(0, None)), result);
+  }
+
+  #[test]
+  fn parse_label_value_empty_v2() {
+    let data = [0, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_value_v2(0, &data);
+    assert_eq!(Ok(super::LabelV2::Value(0, None)), result);
   }
 
   #[test]
@@ -475,9 +569,23 @@ mod test {
   }
 
   #[test]
+  fn label_size_value_v2() {
+    let data = [8, 97, 98, 99, 100, 101, 102, 103, 104];
+    let result = super::parse_label_value_v2(0, &data);
+    assert_eq!(Ok(9), result.map(|r| r.size()));
+  }
+
+  #[test]
   fn label_size_pointer() {
     let data = [192, 10];
     let result = super::parse_label_pointer(0, &data);
+    assert_eq!(Ok(2), result.map(|r| r.size()));
+  }
+
+  #[test]
+  fn label_size_pointer_v2() {
+    let data = [192, 10];
+    let result = super::parse_label_pointer_v2(0, &data);
     assert_eq!(Ok(2), result.map(|r| r.size()));
   }
 
@@ -523,6 +631,20 @@ mod test {
         super::Label::Value(4, Some("def".to_owned())),
         super::Label::Value(8, None),
       ],
+      result
+    );
+  }
+
+  #[test]
+  fn parse_name_v2() {
+    let data = &[3, 97, 98, 99, 2, 97, 98, 0, 4, 97, 98, 99, 100, 1, 97, 0];
+    let result = super::parse_name_v2(0, data);
+    assert_eq!(
+      Ok(vec![
+        super::LabelV2::Value(0, Some(&[97, 98, 99])),
+        super::LabelV2::Value(4, Some(&[97, 98])),
+        super::LabelV2::Value(7, None)
+      ]),
       result
     );
   }
