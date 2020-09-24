@@ -1,4 +1,4 @@
-use crate::message::{parse, parse_v2};
+use crate::message::parse_v2;
 use net2::unix::UnixUdpBuilderExt;
 use std::net::Ipv4Addr;
 
