@@ -1,7 +1,7 @@
 use crate::header::{parse_header, Header};
 use crate::query::{parse_queries, Query};
 use crate::resource_record::{parse_resource_records, ResourceRecord};
-use crate::shared::ParseError;
+use crate::shared::{extract_domain_name, Label, ParseError};
 /*
 https://justanapplication.wordpress.com/category/dns/dns-resource-records/dns-srv-record/
 
@@ -30,7 +30,7 @@ fn parse_additional_resource_records<'a>(
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
-  parse_resource_records(offset, header.ar_count, data)
+  parse_resource_records(offset, header.additional_count, data)
 }
 
 fn parse_name_servers<'a>(
@@ -38,7 +38,7 @@ fn parse_name_servers<'a>(
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
-  parse_resource_records(offset, header.ns_count, data)
+  parse_resource_records(offset, header.name_server_count, data)
 }
 
 fn parse_answers<'a>(
@@ -46,7 +46,7 @@ fn parse_answers<'a>(
   header: &Header,
   data: &'a [u8],
 ) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
-  parse_resource_records(offset, header.an_count, data)
+  parse_resource_records(offset, header.answer_count, data)
 }
 
 pub fn parse(data: &[u8]) -> Result<Message, ParseError> {

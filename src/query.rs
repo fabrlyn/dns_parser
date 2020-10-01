@@ -1,5 +1,7 @@
 use crate::header::Header;
-use crate::shared::{parse_class, parse_name, parse_type, Class, Label, ParseError, Type};
+use crate::shared::{
+  extract_domain_name, parse_class, parse_name, parse_type, Class, Label, ParseError, Type,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum QType {
@@ -18,7 +20,8 @@ enum QClass {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Query<'a> {
-  values: Vec<Label<'a>>,
+  pub values: Vec<Label<'a>>,
+  pub name: String,
   q_response_type: QuestionResponseType,
   q_type: QType,
   q_class: QClass,
@@ -42,8 +45,14 @@ impl<'a> Query<'a> {
   }
 }
 
-fn parse_query(offset: usize, data: &[u8]) -> Result<Query, ParseError> {
+fn parse_query<'a>(
+  labels: &[Label<'a>],
+  offset: usize,
+  data: &'a [u8],
+) -> Result<Query<'a>, ParseError> {
   let values = parse_name(offset, data)?;
+  let name = extract_domain_name(labels, &values);
+
   let offset = values.iter().fold(0, |sum, l| sum + l.size());
 
   if data.len() < offset + 4 {
@@ -61,6 +70,7 @@ fn parse_query(offset: usize, data: &[u8]) -> Result<Query, ParseError> {
   let q_class = parse_q_class(q_class_data);
 
   Ok(Query {
+    name,
     values,
     q_response_type,
     q_type,
@@ -105,9 +115,11 @@ pub fn parse_queries<'a>(
 ) -> Result<Vec<Query<'a>>, ParseError> {
   let mut queries = vec![];
   let mut current_offset = offset;
-  for _ in 0..header.qd_count {
-    let query = parse_query(current_offset, data)?;
+  let mut labels = vec![];
+  for _ in 0..header.question_count {
+    let query = parse_query(&labels, current_offset, data)?;
     current_offset += query.size();
+    labels = [labels, query.values.clone()].concat();
     queries.push(query);
   }
   Ok(queries)

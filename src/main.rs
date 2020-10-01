@@ -1,11 +1,13 @@
 mod header;
 mod message;
+mod publisher;
 mod query;
 mod rdns;
 mod resource_record;
 mod shared;
 use futures_util::stream::StreamExt;
 use mdns::{Record, RecordKind};
+use publisher::NatsPublisher;
 use std::{net::IpAddr, time::Duration};
 
 //const SERVICE_NAME: &'static str = "_googlecast._tcp.local";
@@ -15,7 +17,9 @@ async fn main() {
     //discover_specific_service().await;
     //discover_all_services().await;
     //rdns::mdns();
-    rdns::net_mdns();
+    let publisher = NatsPublisher::new().unwrap();
+
+    rdns::net_mdns(publisher);
 }
 
 fn to_ip_addr(record: &Record) -> Option<IpAddr> {

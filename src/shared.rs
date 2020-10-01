@@ -53,7 +53,7 @@ fn resolve_pointer<'a>(all_labels: &'a [Label], pointer_value: u16) -> Vec<Label
     })
 }
 
-fn extract_domain_name(all_labels: &[Label], name_labels: &[Label]) -> String {
+pub fn extract_domain_name(all_labels: &[Label], name_labels: &[Label]) -> String {
   name_labels
     .iter()
     .take_while(|l| match l {
@@ -70,13 +70,6 @@ fn extract_domain_name(all_labels: &[Label], name_labels: &[Label]) -> String {
     })
     .collect::<Vec<String>>()
     .join(".")
-  /*
-  .fold(String::default(), |mut name, value| {
-    name.push_str(&value);
-    name.push_str(".");
-    name
-  })
-  */
 }
 
 #[derive(Debug, PartialEq, Eq)]

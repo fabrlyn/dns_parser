@@ -1,4 +1,5 @@
 use crate::shared::ParseError;
+use serde::{Deserialize, Serialize};
 
 const HEADER_SIZE: usize = 12;
 
@@ -6,70 +7,72 @@ type RawHeader = [u8; HEADER_SIZE];
 
 pub type MessageId = u16;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum RCode {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum ResponseCode {
   NoError,
   FormatError,
   ServerFailure,
   NameError,
   NotImplemented,
   Refused,
-  Other(u8),
+  Other,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum RD {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum RecursionDesired {
   RecursionDesired,
   RecursionNotDesired,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum QR {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum QueryOrResponse {
   Query,
   Response,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum RA {
   RecursionAvailable,
   RecursionNotAvailable,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum TC {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum Truncation {
   NotTruncated,
   Truncated,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum AA {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum AuthoritativeAnswer {
   NotAuthoritative,
   Authoritative,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum OpCode {
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum OperationCode {
   Query,
   InverseQuery,
   Status,
-  Other(u8),
+  Other,
 }
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Header {
-  pub id: u16,
-  pub qr: QR,
-  pub op_code: OpCode,
-  pub aa: AA,
-  pub tc: TC,
-  pub rd: RD,
-  pub ra: RA,
+  pub id: MessageId,
+  pub query_or_response: QueryOrResponse,
+  pub operation_code: OperationCode,
+  pub operation_code_value: u8,
+  pub authoritative_answer: AuthoritativeAnswer,
+  pub truncation: Truncation,
+  pub recursion_desired: RecursionDesired,
+  pub recursion_available: RA,
   pub z: u8,
-  pub r_code: RCode,
-  pub qd_count: u16,
-  pub an_count: u16,
-  pub ns_count: u16,
-  pub ar_count: u16,
+  pub response_code: ResponseCode,
+  pub response_code_value: u8,
+  pub question_count: u16,
+  pub answer_count: u16,
+  pub name_server_count: u16,
+  pub additional_count: u16,
 }
 
 pub fn parse_header(data: &[u8]) -> Result<Header, ParseError> {
@@ -84,33 +87,40 @@ pub fn parse_header(data: &[u8]) -> Result<Header, ParseError> {
 
   Ok(Header {
     id: parse_header_message_id(header),
-    qr: parse_header_query_or_response(header),
-    op_code: parse_header_op_code(header),
-    aa: parse_header_authoritative_answer(header),
-    tc: parse_header_truncated(header),
-    rd: parse_header_recursion_desired(header),
-    ra: parse_header_recursion_available(header),
+    query_or_response: parse_header_query_or_response(header),
+    operation_code: parse_header_op_code(header),
+    operation_code_value: parse_header_op_code_value(header),
+    authoritative_answer: parse_header_authoritative_answer(header),
+    truncation: parse_header_truncated(header),
+    recursion_desired: parse_header_recursion_desired(header),
+    recursion_available: parse_header_recursion_available(header),
     z: parse_header_z(header),
-    r_code: parse_header_r_code(header),
-    qd_count: parse_header_qd_count(header),
-    an_count: parse_header_an_count(header),
-    ns_count: parse_header_ns_count(header),
-    ar_count: parse_header_ar_count(header),
+    response_code: parse_header_r_code(header),
+    response_code_value: parse_header_response_code_value(header),
+    question_count: parse_header_qd_count(header),
+    answer_count: parse_header_an_count(header),
+    name_server_count: parse_header_ns_count(header),
+    additional_count: parse_header_ar_count(header),
   })
 }
 
-fn parse_header_r_code(header: RawHeader) -> RCode {
+fn parse_header_r_code(header: RawHeader) -> ResponseCode {
   let mask = 0b00001111;
   let r_code = mask & header[3];
   match r_code {
-    0 => RCode::NoError,
-    1 => RCode::FormatError,
-    2 => RCode::ServerFailure,
-    3 => RCode::NameError,
-    4 => RCode::NotImplemented,
-    5 => RCode::Refused,
-    n => RCode::Other(n),
+    0 => ResponseCode::NoError,
+    1 => ResponseCode::FormatError,
+    2 => ResponseCode::ServerFailure,
+    3 => ResponseCode::NameError,
+    4 => ResponseCode::NotImplemented,
+    5 => ResponseCode::Refused,
+    _ => ResponseCode::Other,
   }
+}
+
+fn parse_header_response_code_value(header: RawHeader) -> u8 {
+  let mask = 0b00001111;
+  mask & header[3]
 }
 
 fn parse_header_qd_count(header: RawHeader) -> u16 {
@@ -143,12 +153,12 @@ fn parse_header_recursion_available(header: RawHeader) -> RA {
   }
 }
 
-fn parse_header_recursion_desired(header: RawHeader) -> RD {
+fn parse_header_recursion_desired(header: RawHeader) -> RecursionDesired {
   let mask = 0b00000001;
   let recursion_desired = mask & header[2];
   match recursion_desired {
-    1 => RD::RecursionDesired,
-    _ => RD::RecursionNotDesired,
+    1 => RecursionDesired::RecursionDesired,
+    _ => RecursionDesired::RecursionNotDesired,
   }
 }
 
@@ -156,40 +166,45 @@ fn parse_header_message_id(header: RawHeader) -> MessageId {
   (header[0] as u16) << 8 | header[1] as u16
 }
 
-fn parse_header_query_or_response(header: RawHeader) -> QR {
+fn parse_header_query_or_response(header: RawHeader) -> QueryOrResponse {
   if header[2] >> 7 == 1 {
-    QR::Response
+    QueryOrResponse::Response
   } else {
-    QR::Query
+    QueryOrResponse::Query
   }
 }
 
-fn parse_header_op_code(header: RawHeader) -> OpCode {
+fn parse_header_op_code(header: RawHeader) -> OperationCode {
   let mask = 0b01111000;
   let op_code = (mask & header[2]) >> 3;
   match op_code {
-    0 => OpCode::Query,
-    1 => OpCode::InverseQuery,
-    2 => OpCode::Status,
-    n => OpCode::Other(n),
+    0 => OperationCode::Query,
+    1 => OperationCode::InverseQuery,
+    2 => OperationCode::Status,
+    _ => OperationCode::Other,
   }
 }
 
-fn parse_header_authoritative_answer(header: RawHeader) -> AA {
+fn parse_header_op_code_value(header: RawHeader) -> u8 {
+  let mask = 0b01111000;
+  (mask & header[2]) >> 3
+}
+
+fn parse_header_authoritative_answer(header: RawHeader) -> AuthoritativeAnswer {
   let mask = 0b00000100;
   let aa = (mask & header[2]) >> 2;
   match aa {
-    1 => AA::Authoritative,
-    _ => AA::NotAuthoritative,
+    1 => AuthoritativeAnswer::Authoritative,
+    _ => AuthoritativeAnswer::NotAuthoritative,
   }
 }
 
-fn parse_header_truncated(header: RawHeader) -> TC {
+fn parse_header_truncated(header: RawHeader) -> Truncation {
   let mask = 0b00000010;
   let truncated = (mask & header[2]) >> 1;
   match truncated {
-    1 => TC::Truncated,
-    _ => TC::NotTruncated,
+    1 => Truncation::Truncated,
+    _ => Truncation::NotTruncated,
   }
 }
 
@@ -235,69 +250,78 @@ mod test {
   fn parse_header_op_code_query() {
     let data = [0, 0, 0b00000000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let op_code = super::parse_header_op_code(data);
-    assert_eq!(super::OpCode::Query, op_code);
+    assert_eq!(super::OperationCode::Query, op_code);
   }
 
   #[test]
   fn parse_header_op_code_inverse_query() {
     let data = [0, 0, 0b00001000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let op_code = super::parse_header_op_code(data);
-    assert_eq!(super::OpCode::InverseQuery, op_code);
+    assert_eq!(super::OperationCode::InverseQuery, op_code);
   }
 
   #[test]
   fn parse_header_op_code_status() {
     let data = [0, 0, 0b00010000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let op_code = super::parse_header_op_code(data);
-    assert_eq!(super::OpCode::Status, op_code);
+    assert_eq!(super::OperationCode::Status, op_code);
   }
 
   #[test]
   fn parse_header_op_code_other() {
     let data = [0, 0, 0b00101000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let op_code = super::parse_header_op_code(data);
-    assert_eq!(super::OpCode::Other(5), op_code);
+    assert_eq!(super::OperationCode::Other, op_code);
   }
 
   #[test]
   fn parse_header_authoritative_answer_is_authoritative() {
     let data = [0, 0, 0b00000000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let authoritative_answer = super::parse_header_authoritative_answer(data);
-    assert_eq!(super::AA::NotAuthoritative, authoritative_answer);
+    assert_eq!(
+      super::AuthoritativeAnswer::NotAuthoritative,
+      authoritative_answer
+    );
   }
 
   #[test]
   fn parse_header_authoritative_answer_is_not_authoritative() {
     let data = [0, 0, 0b00000100, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let authoritative_answer = super::parse_header_authoritative_answer(data);
-    assert_eq!(super::AA::Authoritative, authoritative_answer);
+    assert_eq!(
+      super::AuthoritativeAnswer::Authoritative,
+      authoritative_answer
+    );
   }
   #[test]
   fn parse_header_truncation_not_truncated() {
     let data = [0, 0, 0b00000000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let truncated = super::parse_header_truncated(data);
-    assert_eq!(super::TC::NotTruncated, truncated);
+    assert_eq!(super::Truncation::NotTruncated, truncated);
   }
 
   #[test]
   fn parse_header_truncation_is_truncated() {
     let data = [0, 0, 0b00000010, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let truncated = super::parse_header_truncated(data);
-    assert_eq!(super::TC::Truncated, truncated);
+    assert_eq!(super::Truncation::Truncated, truncated);
   }
 
   #[test]
   fn parse_header_recursion_is_desired() {
     let data = [0, 0, 0b00000001, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let recursion_desired = super::parse_header_recursion_desired(data);
-    assert_eq!(super::RD::RecursionDesired, recursion_desired);
+    assert_eq!(super::RecursionDesired::RecursionDesired, recursion_desired);
   }
 
   #[test]
   fn parse_header_recursion_is_not_desired() {
     let data = [0, 0, 0b00000000, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let recursion_desired = super::parse_header_recursion_desired(data);
-    assert_eq!(super::RD::RecursionNotDesired, recursion_desired);
+    assert_eq!(
+      super::RecursionDesired::RecursionNotDesired,
+      recursion_desired
+    );
   }
 
   #[test]
@@ -327,49 +351,49 @@ mod test {
   fn parse_header_r_code_t_no_error() {
     let data = [0, 0, 0, 0b00000000, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::NoError, r_code);
+    assert_eq!(super::ResponseCode::NoError, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_format_error() {
     let data = [0, 0, 0, 0b00000001, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::FormatError, r_code);
+    assert_eq!(super::ResponseCode::FormatError, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_server_failure() {
     let data = [0, 0, 0, 0b00000010, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::ServerFailure, r_code);
+    assert_eq!(super::ResponseCode::ServerFailure, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_name_error() {
     let data = [0, 0, 0, 0b00000011, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::NameError, r_code);
+    assert_eq!(super::ResponseCode::NameError, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_not_implemented() {
     let data = [0, 0, 0, 0b00000100, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::NotImplemented, r_code);
+    assert_eq!(super::ResponseCode::NotImplemented, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_refused() {
     let data = [0, 0, 0, 0b00000101, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::Refused, r_code);
+    assert_eq!(super::ResponseCode::Refused, r_code);
   }
 
   #[test]
   fn parse_header_r_code_t_other() {
     let data = [0, 0, 0, 0b00001010, 0, 0, 0, 0, 0, 0, 0, 0];
     let r_code = super::parse_header_r_code(data);
-    assert_eq!(super::RCode::Other(10), r_code);
+    assert_eq!(super::ResponseCode::Other, r_code);
   }
 
   #[test]

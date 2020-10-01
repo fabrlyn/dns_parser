@@ -1,0 +1,12 @@
+version: "3.7"
+services:
+  nats-ui:
+    image: sphqxe/nats-webui:latest
+    ports:
+      - 80:80
+  nats:
+    image: nats:latest
+    ports:
+      - 4222:4222
+      - 6222:6222
+      - 8222:8222
