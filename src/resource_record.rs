@@ -36,8 +36,8 @@ impl std::fmt::Display for ResourceRecordData {
 }
 
 #[derive(Debug)]
-pub struct ResourceRecord<'a> {
-  pub values: Vec<Label<'a>>,
+pub struct ResourceRecord {
+  pub values: Vec<Label>,
   pub resource_record_type: ResourceRecordType,
   pub class: Class,
   pub ttl: u32,
@@ -45,7 +45,7 @@ pub struct ResourceRecord<'a> {
   pub resource_record_data: ResourceRecordData,
 }
 
-impl<'a> ResourceRecord<'a> {
+impl<'a> ResourceRecord {
   pub fn size(&self) -> usize {
     let type_length = 2;
     let class_length = 2;
@@ -63,6 +63,7 @@ impl<'a> ResourceRecord<'a> {
 }
 
 fn parse_resource_record_data(
+  label_store: &mut Vec<Label>,
   offset: usize,
   resource_record_type: &ResourceRecordType,
   _class: &Class,
@@ -77,7 +78,9 @@ fn parse_resource_record_data(
 
   match resource_record_type {
     ResourceRecordType::A => parse_resource_record_data_ip_a(resource_data_length, data),
-    ResourceRecordType::PTR => parse_resource_record_data_ptr(offset, resource_data_length, data),
+    ResourceRecordType::PTR => {
+      parse_resource_record_data_ptr(label_store, offset, resource_data_length, data)
+    }
     _ => parse_resource_record_data_other(resource_data_length, data),
   }
 }
@@ -92,12 +95,14 @@ fn parse_resource_record_data_other(
 }
 
 fn parse_resource_record_data_ptr(
+  label_store: &mut Vec<Label>,
   offset: usize,
   _resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
   let values = parse_name(offset, data)?;
-  let name = extract_domain_name(&[], &values);
+  values.iter().for_each(|v| label_store.push(v.clone()));
+  let name = extract_domain_name(label_store, &values);
   Ok(ResourceRecordData::PTR(name))
 }
 
@@ -142,13 +147,14 @@ fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
   }
 }
 
-fn parse_resource_record<'a>(
-  labels: &[Label],
+fn parse_resource_record(
+  label_store: &mut Vec<Label>,
   offset: usize,
-  data: &'a [u8],
-) -> Result<ResourceRecord<'a>, ParseError> {
+  data: &[u8],
+) -> Result<ResourceRecord, ParseError> {
   let values = parse_name(offset, data)?;
   let next_index = values.iter().fold(offset, |sum, l| sum + l.size());
+  values.iter().for_each(|v| label_store.push(v.clone()));
 
   let resource_record_type_data: [u8; 2] = [data[next_index], data[next_index + 1]];
   let resource_record_type = parse_resource_record_type(resource_record_type_data);
@@ -168,6 +174,7 @@ fn parse_resource_record<'a>(
   let resource_record_data_length = parse_resource_data_length(resource_record_data_length_data);
 
   let resource_record_data = parse_resource_record_data(
+    label_store,
     next_index + 10,
     &resource_record_type,
     &resource_record_class,
@@ -185,18 +192,17 @@ fn parse_resource_record<'a>(
   })
 }
 
-pub fn parse_resource_records<'a>(
+pub fn parse_resource_records(
+  label_store: &mut Vec<Label>,
   start_offset: usize,
   count: u16,
-  data: &'a [u8],
-) -> Result<Vec<ResourceRecord<'a>>, ParseError> {
+  data: &[u8],
+) -> Result<Vec<ResourceRecord>, ParseError> {
   let mut answers = vec![];
   let mut current_offset = start_offset;
-  let mut labels = vec![];
   for _ in 0..count {
-    let answer = parse_resource_record(&labels, current_offset, data)?;
+    let answer = parse_resource_record(label_store, current_offset, data)?;
     current_offset += answer.size();
-    labels = [labels, answer.values.clone()].concat();
     answers.push(answer);
   }
   Ok(answers)

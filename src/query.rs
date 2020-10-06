@@ -19,8 +19,8 @@ enum QClass {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Query<'a> {
-  pub values: Vec<Label<'a>>,
+pub struct Query {
+  pub values: Vec<Label>,
   pub name: String,
   q_response_type: QuestionResponseType,
   q_type: QType,
@@ -33,7 +33,7 @@ enum QuestionResponseType {
   QM,
 }
 
-impl<'a> Query<'a> {
+impl Query {
   pub fn size(&self) -> usize {
     let q_type_size = 2;
     let q_class_size = 2;
@@ -45,13 +45,14 @@ impl<'a> Query<'a> {
   }
 }
 
-fn parse_query<'a>(
-  labels: &[Label<'a>],
+fn parse_query(
+  label_store: &mut Vec<Label>,
   offset: usize,
-  data: &'a [u8],
-) -> Result<Query<'a>, ParseError> {
+  data: &[u8],
+) -> Result<Query, ParseError> {
   let values = parse_name(offset, data)?;
-  let name = extract_domain_name(labels, &values);
+  values.iter().for_each(|v| label_store.push(v.clone()));
+  let name = extract_domain_name(label_store, &values);
 
   let offset = values.iter().fold(0, |sum, l| sum + l.size());
 
@@ -108,18 +109,17 @@ fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
   )
 }
 
-pub fn parse_queries<'a>(
+pub fn parse_queries(
+  label_store: &mut Vec<Label>,
   offset: usize,
   header: &Header,
-  data: &'a [u8],
-) -> Result<Vec<Query<'a>>, ParseError> {
+  data: &[u8],
+) -> Result<Vec<Query>, ParseError> {
   let mut queries = vec![];
   let mut current_offset = offset;
-  let mut labels = vec![];
   for _ in 0..header.question_count {
-    let query = parse_query(&labels, current_offset, data)?;
+    let query = parse_query(label_store, current_offset, data)?;
     current_offset += query.size();
-    labels = [labels, query.values.clone()].concat();
     queries.push(query);
   }
   Ok(queries)

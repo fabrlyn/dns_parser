@@ -28,13 +28,14 @@ where
     .join_multicast_v4(&MULTICAST_ADDR, &Ipv4Addr::new(0, 0, 0, 0))
     .unwrap();
 
-  let mut buf = [0u8; 65535];
+  let mut buf: [u8; 65535] = [0; 65535];
   loop {
     let (amt, src) = socket.recv_from(&mut buf).unwrap();
-    let header = parse(&buf[0..amt]);
+    println!("length: {:?}", amt);
+    println!("src: {:?}", src);
+    let header = parse(&buf[..amt]);
     match header {
       Ok(message) => {
-        println!("src: {:?}", src);
         print(&message);
 
         let publish_message = publisher::Message {

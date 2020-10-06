@@ -11,12 +11,12 @@ const LABEL_MASK_TYPE_VALUE: u8 = 0b00000000;
 const LABEL_MASK_TYPE_POINTER: u8 = 0b11000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Label<'a> {
-  Value(u16, Option<&'a [u8]>),
+pub enum Label {
+  Value(u16, Option<Vec<u8>>),
   Pointer(u16, u16),
 }
 
-impl<'a> Label<'a> {
+impl Label {
   pub fn size(&self) -> usize {
     match self {
       Label::Value(_, Some(l)) => l.len() + 1,
@@ -26,7 +26,7 @@ impl<'a> Label<'a> {
   }
 }
 
-fn resolve_pointer<'a>(all_labels: &'a [Label], pointer_value: u16) -> Vec<Label<'a>> {
+fn resolve_pointer(all_labels: &Vec<Label>, pointer_value: u16) -> Vec<Label> {
   let mut take_inclusive_found = false;
   all_labels
     .iter()
@@ -53,17 +53,28 @@ fn resolve_pointer<'a>(all_labels: &'a [Label], pointer_value: u16) -> Vec<Label
     })
 }
 
-pub fn extract_domain_name(all_labels: &[Label], name_labels: &[Label]) -> String {
+pub fn extract_domain_name(label_store: &Vec<Label>, name_labels: &[Label]) -> String {
+  let mut found_pointer = false;
   name_labels
     .iter()
-    .take_while(|l| match l {
-      Label::Value(_, None) => false,
-      _ => true,
+    .take_while(|l| {
+      if found_pointer {
+        return false;
+      }
+
+      match l {
+        Label::Value(_, None) => false,
+        Label::Pointer(_, _) => {
+          found_pointer = true;
+          true
+        }
+        _ => true,
+      }
     })
     .map(|l| match l {
       Label::Pointer(_, pointer) => {
-        let pointer_name_labels = resolve_pointer(all_labels, *pointer);
-        extract_domain_name(all_labels, &pointer_name_labels)
+        let pointer_name_labels = resolve_pointer(label_store, *pointer);
+        extract_domain_name(label_store, &pointer_name_labels)
       }
       Label::Value(_, Some(data)) => std::str::from_utf8(data).unwrap().to_owned(),
       Label::Value(_, None) => "".to_owned(),
@@ -170,7 +181,7 @@ fn parse_label_value(offset: usize, data: &[u8]) -> Result<Label, ParseError> {
     }
   }
 
-  Ok(Label::Value(offset as u16, Some(label_data)))
+  Ok(Label::Value(offset as u16, Some(Vec::from(label_data))))
 }
 
 pub fn parse_name(offset: usize, data: &[u8]) -> Result<Vec<Label>, ParseError> {
@@ -304,7 +315,7 @@ mod test {
     let result = super::parse_name(0, &[3, 97, 98, 99, 0]);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(0, Some(&[97, 98, 99])),
+        super::Label::Value(0, Some(vec![97, 98, 99])),
         super::Label::Value(4, None)
       ]),
       result
@@ -354,7 +365,7 @@ mod test {
     assert_eq!(
       Ok(super::Label::Value(
         0,
-        Some(&[97, 98, 99, 100, 101, 102, 103, 104])
+        Some(vec![97, 98, 99, 100, 101, 102, 103, 104])
       )),
       result
     );
@@ -387,8 +398,8 @@ mod test {
     let result = super::parse_name(0, data);
     assert_eq!(
       Ok(vec![
-        super::Label::Value(0, Some(&[97, 98, 99])),
-        super::Label::Value(4, Some(&[97, 98])),
+        super::Label::Value(0, Some(vec![97, 98, 99])),
+        super::Label::Value(4, Some(vec![97, 98])),
         super::Label::Value(7, None)
       ]),
       result
@@ -397,22 +408,22 @@ mod test {
 
   #[test]
   fn resolve_pointer() {
-    let labels = &[
-      super::Label::Value(0, Some(&[1, 2, 3])),
+    let labels = vec![
+      super::Label::Value(0, Some(vec![1, 2, 3])),
       super::Label::Value(4, None),
-      super::Label::Value(5, Some(&[4, 5, 6])),
-      super::Label::Value(9, Some(&[7, 8])),
+      super::Label::Value(5, Some(vec![4, 5, 6])),
+      super::Label::Value(9, Some(vec![7, 8])),
       super::Label::Value(12, None),
-      super::Label::Value(13, Some(&[9])),
-      super::Label::Value(15, Some(&[10])),
+      super::Label::Value(13, Some(vec![9])),
+      super::Label::Value(15, Some(vec![10])),
       super::Label::Value(17, None),
     ];
 
-    let result = super::resolve_pointer(labels, 5);
+    let result = super::resolve_pointer(&labels, 5);
     assert_eq!(
       vec![
-        super::Label::Value(5, Some(&[4, 5, 6])),
-        super::Label::Value(9, Some(&[7, 8])),
+        super::Label::Value(5, Some(vec![4, 5, 6])),
+        super::Label::Value(9, Some(vec![7, 8])),
         super::Label::Value(12, None)
       ],
       result
@@ -421,20 +432,20 @@ mod test {
 
   #[test]
   fn extract_domain_name() {
-    let all_labels = &[
-      super::Label::Value(0, Some(&[120, 121])),
+    let all_labels = vec![
+      super::Label::Value(0, Some(vec![120, 121])),
       super::Label::Value(3, None),
-      super::Label::Value(4, Some(&[97, 98, 99])),
-      super::Label::Value(8, Some(&[100, 101, 102])),
-      super::Label::Value(12, Some(&[103, 104, 105])),
+      super::Label::Value(4, Some(vec![97, 98, 99])),
+      super::Label::Value(8, Some(vec![100, 101, 102])),
+      super::Label::Value(12, Some(vec![103, 104, 105])),
       super::Label::Value(16, None),
-      super::Label::Value(17, Some(&[97, 98])),
-      super::Label::Value(20, Some(&[99, 100, 101])),
-      super::Label::Value(24, Some(&[102, 103, 104])),
+      super::Label::Value(17, Some(vec![97, 98])),
+      super::Label::Value(20, Some(vec![99, 100, 101])),
+      super::Label::Value(24, Some(vec![102, 103, 104])),
       super::Label::Pointer(28, 4),
     ];
 
-    let domain_name = super::extract_domain_name(all_labels, &all_labels[6..]);
+    let domain_name = super::extract_domain_name(&all_labels, &all_labels[6..]);
     assert_eq!("ab.cde.fgh.abc.def.ghi".to_owned(), domain_name);
   }
 }

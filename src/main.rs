@@ -1,4 +1,5 @@
 mod header;
+mod hex;
 mod message;
 mod publisher;
 mod query;
