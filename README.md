@@ -1,8 +1,8 @@
 # Parsing your own DNS packets in Rust
 
-Here is a story of me learning how to parse DNS records in Rust
+Here is a story of me learning how to parse DNS records using Rust
 
-## Where does mDNS packets come from?
+## Where do mDNS packets come from?
 
 ## What does a mDNS packet look like?
 

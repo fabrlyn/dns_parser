@@ -75,7 +75,7 @@ pub struct Header {
   pub additional_count: u16,
 }
 
-pub fn parse_header(data: &[u8]) -> Result<Header, ParseError> {
+pub fn create_raw_header(data: &[u8]) -> Result<RawHeader, ParseError> {
   if data.len() < HEADER_SIZE {
     return Err(ParseError::HeaderError(String::from(
       "Data is smaller than header",
@@ -84,6 +84,12 @@ pub fn parse_header(data: &[u8]) -> Result<Header, ParseError> {
 
   let mut header: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
   header.clone_from_slice(&data[0..HEADER_SIZE]);
+
+  Ok(header)
+}
+
+pub fn parse_header(data: &[u8]) -> Result<Header, ParseError> {
+  let header = create_raw_header(data)?;
 
   Ok(Header {
     id: parse_header_message_id(header),
