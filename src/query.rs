@@ -45,7 +45,7 @@ impl Query {
   }
 }
 
-fn parse_query(
+pub fn parse_query(
   label_store: &mut Vec<Label>,
   offset: usize,
   data: &[u8],

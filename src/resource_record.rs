@@ -23,9 +23,9 @@ pub struct SRV {}
 #[derive(Debug)]
 pub enum ResourceRecordData {
   A(std::net::Ipv4Addr),
+  AAAA(std::net::Ipv6Addr),
   PTR(String),
   TXT(String),
-  SRV(SRV),
   Other(Vec<u8>),
 }
 
@@ -83,6 +83,9 @@ fn parse_resource_record_data(
 
   match resource_record_type {
     ResourceRecordType::A => parse_resource_record_data_ip_a(offset, resource_data_length, data),
+    ResourceRecordType::AAAA => {
+      parse_resource_record_data_ip_aaaa(offset, resource_data_length, data)
+    }
     ResourceRecordType::TXT => parse_resource_record_data_txt(offset, resource_data_length, data),
     ResourceRecordType::PTR => {
       parse_resource_record_data_ptr(label_store, offset, resource_data_length, data)
@@ -127,6 +130,29 @@ fn parse_resource_record_data_ptr(
   Ok(ResourceRecordData::PTR(name))
 }
 
+fn parse_resource_record_data_ip_aaaa(
+  offset: usize,
+  _resource_data_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  if data.len() < 16 {
+    return Err(ParseError::ResourceRecordError(
+      "Data would overflow when parsing IPv4 resource".to_owned(),
+    ));
+  }
+
+  Ok(ResourceRecordData::AAAA(std::net::Ipv6Addr::new(
+    u16::from_be_bytes([data[offset], data[offset + 1]]),
+    u16::from_be_bytes([data[offset + 2], data[offset + 3]]),
+    u16::from_be_bytes([data[offset + 4], data[offset + 5]]),
+    u16::from_be_bytes([data[offset + 6], data[offset + 7]]),
+    u16::from_be_bytes([data[offset + 8], data[offset + 9]]),
+    u16::from_be_bytes([data[offset + 10], data[offset + 11]]),
+    u16::from_be_bytes([data[offset + 12], data[offset + 13]]),
+    u16::from_be_bytes([data[offset + 14], data[offset + 15]]),
+  )))
+}
+
 fn parse_resource_record_data_ip_a(
   offset: usize,
   _resource_data_length: u16,
@@ -144,14 +170,6 @@ fn parse_resource_record_data_ip_a(
     data[offset + 2],
     data[offset + 3],
   )))
-}
-
-fn parse_resource_record_data_srv(
-  offset: usize,
-  _resource_data_length: u16,
-  data: &[u8],
-) -> Result<ResourceRecordData, ParseError> {
-  Ok(ResourceRecordData::SRV(SRV {}))
 }
 
 fn parse_resource_data_length(data: [u8; 2]) -> u16 {
@@ -268,17 +286,5 @@ mod test {
       let result = super::parse_resource_data_length(td.1);
       assert_eq!(td.0, result);
     }
-  }
-
-  #[test]
-  fn parse_resource_record_data_src() {
-    let srv_data = &[
-      0, 0, 0, 0, 125, 127, 36, 101, 48, 55, 49, 57, 101, 101, 53, 45, 100, 55, 102, 56, 45, 57,
-      98, 102, 100, 45, 57, 101, 97, 55, 45, 52, 52, 53, 97, 55, 49, 48, 48, 53, 55, 53, 50, 192,
-      29,
-    ];
-
-    let result = super::parse_resource_record_data_srv(0, srv_data.len() as u16, srv_data);
-    println!("result: {:?}", result);
   }
 }
