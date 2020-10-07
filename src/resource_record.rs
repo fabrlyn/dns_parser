@@ -18,16 +18,21 @@ pub enum ResourceRecordType {
 }
 
 #[derive(Debug)]
+pub struct SRV {}
+
+#[derive(Debug)]
 pub enum ResourceRecordData {
   A(std::net::Ipv4Addr),
   PTR(String),
+  TXT(String),
+  SRV(SRV),
   Other(Vec<u8>),
 }
 
 impl std::fmt::Display for ResourceRecordData {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let value = match self {
-      ResourceRecordData::Other(_) => "".to_string(),
+      ResourceRecordData::Other(value) => format!("{:?})", value),
       a => format!("{:?}", a),
     };
     write!(f, "{:?}", value);
@@ -77,20 +82,33 @@ fn parse_resource_record_data(
   }
 
   match resource_record_type {
-    ResourceRecordType::A => parse_resource_record_data_ip_a(resource_data_length, data),
+    ResourceRecordType::A => parse_resource_record_data_ip_a(offset, resource_data_length, data),
+    ResourceRecordType::TXT => parse_resource_record_data_txt(offset, resource_data_length, data),
     ResourceRecordType::PTR => {
       parse_resource_record_data_ptr(label_store, offset, resource_data_length, data)
     }
-    _ => parse_resource_record_data_other(resource_data_length, data),
+    _ => parse_resource_record_data_other(offset, resource_data_length, data),
   }
 }
 
+fn parse_resource_record_data_txt(
+  offset: usize,
+  resource_record_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  std::str::from_utf8(&data[offset..offset + (resource_record_length as usize)])
+    .map(|s| s.to_owned())
+    .map(|s| ResourceRecordData::TXT(s))
+    .map_err(|e| ParseError::ResourceRecordError(e.to_string()))
+}
+
 fn parse_resource_record_data_other(
+  offset: usize,
   resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
   Ok(ResourceRecordData::Other(Vec::from(
-    &data[0..(resource_data_length as usize)],
+    &data[offset..offset + (resource_data_length as usize)],
   )))
 }
 
@@ -107,6 +125,7 @@ fn parse_resource_record_data_ptr(
 }
 
 fn parse_resource_record_data_ip_a(
+  offset: usize,
   _resource_data_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
@@ -117,8 +136,19 @@ fn parse_resource_record_data_ip_a(
   }
 
   Ok(ResourceRecordData::A(std::net::Ipv4Addr::new(
-    data[0], data[1], data[2], data[3],
+    data[offset],
+    data[offset + 1],
+    data[offset + 2],
+    data[offset + 3],
   )))
+}
+
+fn parse_resource_record_data_srv(
+  offset: usize,
+  _resource_data_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  Ok(ResourceRecordData::SRV(SRV {}))
 }
 
 fn parse_resource_data_length(data: [u8; 2]) -> u16 {
@@ -236,5 +266,17 @@ mod test {
       let result = super::parse_resource_data_length(td.1);
       assert_eq!(td.0, result);
     }
+  }
+
+  #[test]
+  fn parse_resource_record_data_src() {
+    let srv_data = &[
+      0, 0, 0, 0, 125, 127, 36, 101, 48, 55, 49, 57, 101, 101, 53, 45, 100, 55, 102, 56, 45, 57,
+      98, 102, 100, 45, 57, 101, 97, 55, 45, 52, 52, 53, 97, 55, 49, 48, 48, 53, 55, 53, 50, 192,
+      29,
+    ];
+
+    let result = super::parse_resource_record_data_srv(0, srv_data.len() as u16, srv_data);
+    println!("result: {:?}", result);
   }
 }
