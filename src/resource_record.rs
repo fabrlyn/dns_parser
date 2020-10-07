@@ -91,15 +91,18 @@ fn parse_resource_record_data(
   }
 }
 
+fn to_ascii(data: &[u8]) -> String {
+  data.iter().map(|c| *c as char).collect::<String>()
+}
+
 fn parse_resource_record_data_txt(
   offset: usize,
   resource_record_length: u16,
   data: &[u8],
 ) -> Result<ResourceRecordData, ParseError> {
-  std::str::from_utf8(&data[offset..offset + (resource_record_length as usize)])
-    .map(|s| s.to_owned())
-    .map(|s| ResourceRecordData::TXT(s))
-    .map_err(|e| ParseError::ResourceRecordError(e.to_string()))
+  Ok(ResourceRecordData::TXT(to_ascii(
+    &data[offset..offset + (resource_record_length as usize)],
+  )))
 }
 
 fn parse_resource_record_data_other(
