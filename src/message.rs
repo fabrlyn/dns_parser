@@ -63,7 +63,6 @@ pub fn parse(data: &[u8]) -> Result<Message, ParseError> {
   let queries = parse_queries(&mut label_store, offset, &header, data)?;
   let queries_length = queries.iter().fold(offset, |sum, q| sum + q.size());
 
-  println!("1");
   let answers = parse_answers(&mut label_store, queries_length, &header, data)?;
   let answers_length = answers.iter().fold(queries_length, |sum, a| sum + a.size());
 

@@ -114,8 +114,7 @@ pub enum Type {
 }
 
 pub fn parse_class(data: [u8; 2]) -> Class {
-  let class = (data[0] as u16) << 8 | data[1] as u16;
-  match class {
+  match u16::from_be_bytes(data) {
     1 => Class::IN,
     2 => Class::CS,
     3 => Class::CH,
@@ -125,8 +124,7 @@ pub fn parse_class(data: [u8; 2]) -> Class {
 }
 
 pub fn parse_type(data: [u8; 2]) -> Type {
-  let t = (data[0] as u16) << 8 | data[1] as u16;
-  match t {
+  match u16::from_be_bytes(data) {
     1 => Type::A,
     2 => Type::NS,
     3 => Type::MD,

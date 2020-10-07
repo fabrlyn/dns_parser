@@ -80,8 +80,7 @@ fn parse_query(
 }
 
 fn parse_q_class(data: [u8; 2]) -> QClass {
-  let class = (data[0] as u16) << 8 | data[1] as u16;
-  match class {
+  match u16::from_be_bytes([data[0], data[1]]) {
     255 => QClass::Any,
     _ => QClass::Class(parse_class(data)),
   }
@@ -95,7 +94,7 @@ fn parse_q_response_type(data: u8) -> QuestionResponseType {
 }
 
 fn parse_q_type(data: [u8; 2]) -> (QuestionResponseType, QType) {
-  let q_type = ((0b01111111 & data[0]) as u16) << 8 | data[1] as u16;
+  let q_type = u16::from_be_bytes([(0b01111111 & data[0]), data[1]]);
   let response_type = parse_q_response_type(data[0]);
   (
     response_type,

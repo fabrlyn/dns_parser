@@ -130,19 +130,19 @@ fn parse_header_response_code_value(header: RawHeader) -> u8 {
 }
 
 fn parse_header_qd_count(header: RawHeader) -> u16 {
-  (header[4] as u16) << 8 | header[5] as u16
+  u16::from_be_bytes([header[4], header[5]])
 }
 
 fn parse_header_an_count(header: RawHeader) -> u16 {
-  (header[6] as u16) << 8 | header[7] as u16
+  u16::from_be_bytes([header[6], header[7]])
 }
 
 fn parse_header_ns_count(header: RawHeader) -> u16 {
-  (header[8] as u16) << 8 | header[9] as u16
+  u16::from_be_bytes([header[8], header[9]])
 }
 
 fn parse_header_ar_count(header: RawHeader) -> u16 {
-  (header[10] as u16) << 8 | header[11] as u16
+  u16::from_be_bytes([header[10], header[11]])
 }
 
 fn parse_header_z(header: RawHeader) -> u8 {
@@ -169,7 +169,7 @@ fn parse_header_recursion_desired(header: RawHeader) -> RecursionDesired {
 }
 
 fn parse_header_message_id(header: RawHeader) -> MessageId {
-  (header[0] as u16) << 8 | header[1] as u16
+  u16::from_be_bytes([header[0], header[1]])
 }
 
 fn parse_header_query_or_response(header: RawHeader) -> QueryOrResponse {

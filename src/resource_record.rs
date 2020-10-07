@@ -155,16 +155,15 @@ fn parse_resource_record_data_srv(
 }
 
 fn parse_resource_data_length(data: [u8; 2]) -> u16 {
-  (data[0] as u16) << 8 | data[1] as u16
+  u16::from_be_bytes(data)
 }
 
 fn parse_ttl(data: [u8; 4]) -> u32 {
-  (data[0] as u32) << 24 | (data[1] as u32) << 16 | (data[2] as u32) << 8 | data[3] as u32
+  u32::from_be_bytes(data)
 }
 
 fn parse_resource_record_type(data: [u8; 2]) -> ResourceRecordType {
-  let resource_record_type = (data[0] as u16) << 8 | data[1] as u16;
-  match resource_record_type {
+  match u16::from_be_bytes(data) {
     1 => ResourceRecordType::A,
     2 => ResourceRecordType::NS,
     5 => ResourceRecordType::CNAME,
