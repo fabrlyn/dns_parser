@@ -18,12 +18,17 @@ pub enum ResourceRecordType {
 }
 
 #[derive(Debug)]
-pub struct SRV {}
+pub struct SRV {
+  priority: u16,
+  weight: u16,
+  port: u16,
+}
 
 #[derive(Debug)]
 pub enum ResourceRecordData {
   A(std::net::Ipv4Addr),
   AAAA(std::net::Ipv6Addr),
+  SRV(SRV),
   PTR(String),
   TXT(String),
   Other(Vec<u8>),
@@ -35,14 +40,14 @@ impl std::fmt::Display for ResourceRecordData {
       ResourceRecordData::Other(value) => format!("{:?})", value),
       a => format!("{:?}", a),
     };
-    write!(f, "{:?}", value);
-    Ok(())
+    write!(f, "{:?}", value)
   }
 }
 
 #[derive(Debug)]
 pub struct ResourceRecord {
   pub values: Vec<Label>,
+  pub name: String,
   pub resource_record_type: ResourceRecordType,
   pub class: Class,
   pub ttl: u32,
@@ -86,6 +91,7 @@ fn parse_resource_record_data(
     ResourceRecordType::AAAA => {
       parse_resource_record_data_ip_aaaa(offset, resource_data_length, data)
     }
+    ResourceRecordType::SRV => parse_resource_record_data_srv(offset, resource_data_length, data),
     ResourceRecordType::TXT => parse_resource_record_data_txt(offset, resource_data_length, data),
     ResourceRecordType::PTR => {
       parse_resource_record_data_ptr(label_store, offset, resource_data_length, data)
@@ -96,6 +102,22 @@ fn parse_resource_record_data(
 
 fn to_ascii(data: &[u8]) -> String {
   data.iter().map(|c| *c as char).collect::<String>()
+}
+
+fn parse_resource_record_data_srv(
+  offset: usize,
+  resource_record_length: u16,
+  data: &[u8],
+) -> Result<ResourceRecordData, ParseError> {
+  println!(
+    "{:?}",
+    &data[offset..offset + (resource_record_length as usize)]
+  );
+  Ok(ResourceRecordData::SRV(SRV {
+    priority: u16::from_be_bytes([data[offset], data[offset + 1]]),
+    weight: u16::from_be_bytes([data[offset + 2], data[offset + 3]]),
+    port: u16::from_be_bytes([data[offset + 4], data[offset + 5]]),
+  }))
 }
 
 fn parse_resource_record_data_txt(
@@ -203,6 +225,7 @@ fn parse_resource_record(
   data: &[u8],
 ) -> Result<ResourceRecord, ParseError> {
   let values = parse_name(offset, data)?;
+  let name = extract_domain_name(label_store, &values);
   let next_index = values.iter().fold(offset, |sum, l| sum + l.size());
   values.iter().for_each(|v| label_store.push(v.clone()));
 
@@ -234,6 +257,7 @@ fn parse_resource_record(
 
   Ok(ResourceRecord {
     values,
+    name,
     resource_record_type,
     class: resource_record_class,
     ttl,

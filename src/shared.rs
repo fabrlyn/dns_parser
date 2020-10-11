@@ -24,16 +24,20 @@ impl Label {
       Label::Pointer(_, _) => 2,
     }
   }
+
+  pub fn is_value_at_index(&self, index: u16) -> bool {
+    match self {
+      Label::Value(value_index, _) => *value_index != index,
+      _ => false,
+    }
+  }
 }
 
 fn resolve_pointer(all_labels: &Vec<Label>, pointer_value: u16) -> Vec<Label> {
   let mut take_inclusive_found = false;
   all_labels
     .iter()
-    .skip_while(|l| match l {
-      Label::Value(index, _) => *index != pointer_value,
-      _ => false,
-    })
+    .skip_while(|l| l.is_value_at_index(pointer_value))
     .take_while(|l| {
       if take_inclusive_found {
         return false;

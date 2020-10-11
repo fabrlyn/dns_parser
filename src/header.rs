@@ -1,5 +1,4 @@
 use crate::shared::ParseError;
-use serde::{Deserialize, Serialize};
 
 const HEADER_SIZE: usize = 12;
 
@@ -7,7 +6,7 @@ type RawHeader = [u8; HEADER_SIZE];
 
 pub type MessageId = u16;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ResponseCode {
   NoError,
   FormatError,
@@ -18,37 +17,37 @@ pub enum ResponseCode {
   Other,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RecursionDesired {
   RecursionDesired,
   RecursionNotDesired,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum QueryOrResponse {
   Query,
   Response,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum RA {
   RecursionAvailable,
   RecursionNotAvailable,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Truncation {
   NotTruncated,
   Truncated,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum AuthoritativeAnswer {
   NotAuthoritative,
   Authoritative,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum OperationCode {
   Query,
   InverseQuery,
@@ -56,7 +55,7 @@ pub enum OperationCode {
   Other,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub struct Header {
   pub id: MessageId,
   pub query_or_response: QueryOrResponse,
@@ -237,10 +236,6 @@ mod test {
     48, 53, 55, 53, 50, 192, 29, 193, 72, 0, 1, 128, 1, 0, 0, 0, 120, 0, 4, 192, 168, 1, 137,
   ];
 
-  /*
-  Message ID: 0
-  QoR: Query(0)
-  */
   #[allow(dead_code)]
   const DATA_2: [u8; 154] = [
     0, 0, 0, 0, 0, 3, 0, 2, 0, 0, 0, 1, 8, 95, 104, 111, 109, 101, 107, 105, 116, 4, 95, 116, 99,
